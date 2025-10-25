@@ -32,7 +32,7 @@ class SplashScreen(QMainWindow):
             self.logo_label.setFont(QFont("Arial", 100))
 
         # ======== TÍTULO ========
-        self.title_label = QLabel("FACESENSE Posture Monitor")
+        self.title_label = QLabel("FACESENSE Stress Monitor")
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
 
