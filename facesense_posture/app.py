@@ -15,14 +15,16 @@ from PySide6.QtCore import QTimer, Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 
-# ===== IMPORTA O MÓDULO DE POSTURA =====
-from modules.posture_model import PostureMonitor
+# ===== IMPORTA O MÓDULO DE MICROGESTURE =====
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from modules.microgesture_model import MicrogestureMonitor
 
 
 class PosturaApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🧍 FACESENSE - Monitor de Postura")
+        self.setWindowTitle(" FACESENSE - Monitor Integrado (Microgesture + Postura)")
         self.setGeometry(200, 100, 1200, 750)
         self.historico_sessoes = []  # sempre conterá 'dados'
         self.historico_csv_path = "historico_sessoes.csv"
@@ -56,6 +58,19 @@ class PosturaApp(QMainWindow):
         self.timer_label.setFont(QFont("Arial", 14))
         self.timer_label.setStyleSheet("color: #66ccff;")
 
+        # Labels para valores puros (detector de estresse e detector de microgestos)
+        self.micro_label = QLabel("ESTRESSE: --")
+        self.micro_label.setFont(QFont("Arial", 12))
+        self.micro_label.setStyleSheet("color: #ffd27f;")
+
+        self.posture_label = QLabel("MICROGESTO CLASS: -- (conf: --)")
+        self.posture_label.setFont(QFont("Arial", 12))
+        self.posture_label.setStyleSheet("color: #ffa500;")
+
+        # Por padrão não mostramos os resultados numéricos na UI
+        self.micro_label.setVisible(False)
+        self.posture_label.setVisible(False)
+
         # Botões
         self.btn_iniciar = QPushButton("▶️ Iniciar")
         self.btn_pausar = QPushButton("⏸️ Pausar")
@@ -79,6 +94,8 @@ class PosturaApp(QMainWindow):
         vbox_monitor.addWidget(self.video_label)
         vbox_monitor.addWidget(self.status_label)
         vbox_monitor.addWidget(self.timer_label)
+        vbox_monitor.addWidget(self.micro_label)
+        vbox_monitor.addWidget(self.posture_label)
         vbox_monitor.addLayout(layout_botoes)
         self.tab_monitor.setLayout(vbox_monitor)
 
@@ -91,18 +108,44 @@ class PosturaApp(QMainWindow):
         self.historico = []
 
         # ========= SOM =========
-        if platform.system() == "Windows":
-            import winsound
-            self.beep = lambda: winsound.Beep(1000, 400)
-        else:
-            from playsound import playsound
-            self.beep = lambda: playsound("assets/alerta_postura.mp3")
+        def beep_callback():
+            """Callback simples para som de alerta"""
+            try:
+                # Respeita a checkbox de som
+                if not self.checkbox_som.isChecked():
+                    return
+                if platform.system() == "Windows":
+                    import winsound
+                    winsound.Beep(1000, 400)
+                else:
+                    # Som simples usando simpleaudio se disponível
+                    try:
+                        import numpy as np
+                        import simpleaudio as sa
+                        fs = 44100
+                        t = np.linspace(0, 0.3, int(fs * 0.3), False)
+                        tone = np.sin(1000 * t * 2 * np.pi)
+                        audio = (tone * (32767 * 0.8)).astype(np.int16)
+                        play_obj = sa.play_buffer(audio, 1, 2, fs)
+                        play_obj.wait_done()
+                    except ImportError:
+                        print("🔊 ALERTA: Estresse detectado!")
+            except Exception as e:
+                print(f"🔊 ALERTA: {e}")
+        
+        self.beep = beep_callback
 
-        # ========= MÓDULO DE POSTURA =========
-        self.monitor_postura = PostureMonitor(
+        # ========= MÓDULO INTEGRADO (MICROGESTURE + POSTURA) ==========
+        self.monitor_postura = MicrogestureMonitor(
+            model_path="models/model_face_temporal.pkl",
+            features_json_path="models/features.json",
+            # Usar o classificador de microgestos 'stress.keras'
+            posture_model_path="models/stress.keras",
             beep_callback=self.beep,
             update_callback=self.atualizar_status_ui
         )
+        # Não desenhar resultados sobre o frame (somente gravação em histórico)
+        self.monitor_postura.show_on_screen = False
 
         # ========= ABA HISTÓRICO =========
         self.hist_label = QLabel("📊 Relatórios de monitoramento")
@@ -181,7 +224,7 @@ class PosturaApp(QMainWindow):
     def iniciar_monitoramento(self):
         try:
             self.monitor_postura.ALERTA_SEGUNDOS_POSTURA = self.slider_alerta.value()
-            self.monitor_postura.VOLUME = self.slider_volume.value() / 100 
+            self.monitor_postura.VOLUME = self.slider_volume.value() / 100
             self.monitor_postura.LEMBRETE_ALONGAR_MIN = self.slider_alongamento.value()
             self.monitor_postura.iniciar()
         except Exception as e:
@@ -236,13 +279,32 @@ class PosturaApp(QMainWindow):
     def salvar_sessao(self, inicio, fim, dados):
         """Salva a sessão atual no JSON (com 'dados') e no CSV (resumo). Mantém só as 8 últimas."""
         import json, os
-
-        # Normaliza dados: lista de [tempo, status]
+    # Normaliza dados: aceita formato antigo [tempo, 'boa'/'ruim'] ou novo [tempo, {"micro":.., ...}]
         dados_norm = []
         for item in dados:
-            # item esperado: [tempo_segundos, "boa"/"ruim"]
             if isinstance(item, (list, tuple)) and len(item) == 2:
-                dados_norm.append([float(item[0]), str(item[1])])
+                t = float(item[0])
+                s = item[1]
+                # Se for dicionário (valores puros), mantém como está (json serializável)
+                if isinstance(s, dict):
+                    # Converte valores numéricos quando possível; mantém inteiros (classes) sem alteração
+                    clean = {}
+                    for k, v in s.items():
+                        if v is None:
+                            clean[k] = None
+                        else:
+                            try:
+                                # tenta converter para int quando chave for posture_class
+                                if k == 'posture_class':
+                                    clean[k] = int(v)
+                                else:
+                                    clean[k] = float(v)
+                            except Exception:
+                                clean[k] = v
+                    dados_norm.append([t, clean])
+                else:
+                    # valor legacy, grava como string
+                    dados_norm.append([t, str(s)])
 
         # Adiciona ao histórico em memória
         nova = {"inicio": inicio, "fim": fim, "dados": dados_norm}
@@ -297,7 +359,18 @@ class PosturaApp(QMainWindow):
 
 
     def atualizar_status_ui(self, status, dica):
-        self.status_label.setText(f"{'⚠️' if status == 'ruim' else '✅'} {dica}")
+        # status can be: 'raw_microgesture' or alert types 'alert_corner'/'alert_center'
+        if status == 'alert_corner':
+            # Exibe notificação discreta no canto inferior direito
+            self._show_corner_popup(dica)
+            # também atualiza a status bar
+            self.status_label.setText(f"⚠️ {dica}")
+        elif status == 'alert_center':
+            # Exibe alerta central chamativo
+            self._show_center_popup(dica)
+            self.status_label.setText(f"⚠️ {dica}")
+        else:
+            self.status_label.setText(f"{'⚠️' if status == 'ruim' else '✅'} {dica}")
 
     def gerar_graficos_multiplos(self):
         """Gera até 8 gráficos, um por sessão (linha temporal de postura)"""
@@ -317,9 +390,37 @@ class PosturaApp(QMainWindow):
             if df.empty:
                 continue
 
-            df["minuto"] = (df["tempo"] // 30).astype(int)
-            df["valor"] = df["status"].map({"boa": 1, "ruim": 0})
+            # Extrai valor numérico: prioriza o resultado do detector facial ('micro')
+            def _to_val(s):
+                if isinstance(s, dict):
+                    v = s.get("micro") if s.get("micro") is not None else None
+                    return float(v) if v is not None else np.nan
+                if isinstance(s, str):
+                    return 1.0 if s == "boa" else 0.0 if s == "ruim" else np.nan
+                return np.nan
+
+            # Agrupa por minuto (tempo está em segundos desde o início)
+            df["minuto"] = (df["tempo"] // 60).astype(int)
+            df["valor"] = df["status"].apply(_to_val)
+
+            # Extrai rótulo predito pelo modelo Keras (se disponível)
+            def _to_label(s):
+                if isinstance(s, dict):
+                    return s.get("posture_label")
+                return None
+
+            df["label"] = df["status"].apply(_to_label)
+
+            # Média da probabilidade por minuto
             df_min = df.groupby("minuto")["valor"].mean().reset_index()
+            # Rótulo mais frequente por minuto (modo) para anotar no gráfico
+            df_label = (
+                df.groupby("minuto")["label"]
+                .agg(lambda x: x.dropna().mode().iloc[0] if not x.dropna().empty else None)
+                .reset_index()
+            )
+
+            df_min = df_min.merge(df_label, on="minuto", how="left")
 
             self.ax.plot(
                 df_min["minuto"],
@@ -329,16 +430,60 @@ class PosturaApp(QMainWindow):
                 label=f"{sessao['inicio'].split()[0]} {sessao['fim'].split()[1]}"
             )
 
-        self.ax.set_ylim(-0.1, 1.1)
-        self.ax.set_yticks([0, 0.5, 1])
-        self.ax.set_yticklabels(["Ruim", "Média", "Boa"])
-        self.ax.set_xlabel("Tempo (minutos)")
-        self.ax.set_ylabel("Qualidade da postura")
-        self.ax.set_title("Evolução das últimas sessões")
-        self.ax.legend(loc="upper right", fontsize=8)
-        self.ax.grid(True, linestyle="--", alpha=0.4)
+            # Anota rótulos de classe (quando disponíveis) acima de cada ponto
+            for _, r in df_min.iterrows():
+                lbl = r.get("label")
+                if lbl is not None and lbl is not pd.NA:
+                    try:
+                        self.ax.text(r["minuto"], r["valor"] + 0.02, str(lbl),
+                                     fontsize=8, ha="center", color=cores[i])
+                    except Exception:
+                        pass
 
-        self.canvas.draw()
+            self.ax.set_ylim(-0.05, 1.05)
+            self.ax.set_yticks([0, 0.5, 1])
+            self.ax.set_yticklabels(["0.0", "0.5", "1.0"])
+            self.ax.set_xlabel("Tempo (minutos)")
+            self.ax.set_ylabel("Probabilidade (detector facial)")
+            self.ax.set_title("Evolução da prob. de estresse (microgesture) nas sessões")
+            self.ax.legend(loc="upper right", fontsize=8)
+            self.ax.grid(True, linestyle="--", alpha=0.4)
+
+            self.canvas.draw()
+
+
+    # === POPUPS ===
+    def _show_corner_popup(self, text, timeout=5000):
+        """Mostra uma notificação discreta no canto inferior direito."""
+        try:
+            w = QMessageBox(self)
+            w.setWindowTitle("Sugestão")
+            w.setText(text)
+            w.setStandardButtons(QMessageBox.NoButton)
+            w.setStyleSheet("QMessageBox { background-color: #222; color: #ffd27f; }")
+            # posiciona no canto inferior direito da janela
+            geo = self.geometry()
+            w.setGeometry(geo.x() + geo.width() - 360, geo.y() + geo.height() - 140, 340, 100)
+            w.show()
+            QTimer.singleShot(timeout, w.close)
+        except Exception as e:
+            print("Erro ao mostrar popup de canto:", e)
+
+    def _show_center_popup(self, text, timeout=7000):
+        """Mostra uma notificação central mais chamativa."""
+        try:
+            w = QMessageBox(self)
+            w.setWindowTitle("Alerta de Estresse")
+            w.setText(text)
+            w.setIcon(QMessageBox.Icon.Warning)
+            w.setStandardButtons(QMessageBox.StandardButton.Ok)
+            w.setStyleSheet("QMessageBox { background-color: #2b2b2b; color: #ffb3b3; }")
+            w.setModal(False)
+            w.show()
+            # Fecha automaticamente após timeout se o usuário não interagir
+            QTimer.singleShot(timeout, w.close)
+        except Exception as e:
+            print("Erro ao mostrar popup central:", e)
 
 
 
@@ -350,9 +495,28 @@ class PosturaApp(QMainWindow):
         if frame is None:
             return
 
-        self.historico.append([time.time() - self.start_time, status])
-        self.status_label.setText(f"Postura {status.upper()}")
-        self.status_label.setStyleSheet(f"color: rgb({cor[0]}, {cor[1]}, {cor[2]});")
+        # Coleta valores do monitor (microgesture e postura)
+        micro_val = getattr(self.monitor_postura, 'last_proba', None)
+        posture_class = getattr(self.monitor_postura, 'last_posture_class', None)
+        posture_conf = getattr(self.monitor_postura, 'last_posture_confidence', None)
+
+        # Armazena histórico com micro (+ postura classe e confiança)
+        entry = {
+            "micro": float(micro_val) if micro_val is not None else None,
+            "posture_class": int(posture_class) if posture_class is not None else None,
+            "posture_confidence": float(posture_conf) if posture_conf is not None else None
+        }
+        # Adiciona label e predição crua do modelo Keras (stress.keras)
+        posture_label = getattr(self.monitor_postura, 'last_posture_label', None)
+        posture_pred = getattr(self.monitor_postura, 'last_posture_prediction', None)
+        entry["posture_label"] = posture_label
+        entry["posture_prediction"] = posture_pred
+        self.historico.append([time.time() - self.start_time, entry])
+
+            # Não exibimos os valores puros na UI por pedido do usuário;
+            # preservamos apenas mensagens de estado discretas se necessário.
+
+        # Não atualizamos os labels numéricos na interface (ficam ocultos)
 
         tempo_decorrido = time.time() - self.start_time
         minutos = int(tempo_decorrido // 60)
