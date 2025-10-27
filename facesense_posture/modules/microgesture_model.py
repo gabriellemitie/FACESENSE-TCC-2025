@@ -25,11 +25,17 @@ class MicrogestureMonitor:
         self,
         model_path="models/model_face_temporal.pkl",
         features_json_path="models/features.json",
-        posture_model_path="models/stress.keras",
+        posture_model_path="models/best_model.keras",
         beep_callback=None,
         update_callback=None,
         alerta_segundos=5,
-        lembrete_alongar_min=45
+        lembrete_alongar_min=45,
+        # tempo de janela e agregação (compatível com realtime_mediapipe.py)
+        window_sec=600,
+        bucket_sec=60,
+        warmup_sec=120,
+        threshold_shift=0.08,
+        aliases=None
     ):
         # Configurações
         self.beep_callback = beep_callback
@@ -68,12 +74,19 @@ class MicrogestureMonitor:
         self.posture_model = None
         self.feature_names = []
         self.threshold_base = 0.5
-        self.threshold_shift = 0.08  # Mais difícil classificar como estresse
+        self.threshold_shift = float(threshold_shift)  # Mais difícil classificar como estresse
         
         self._carregar_modelos(model_path, features_json_path, posture_model_path)
-        
-        # Aggregator para features temporais
-        self.aggregator = MinuteAggregator()
+
+        # Aliases (possibilita sobrescrever via construtor)
+        if aliases is not None and isinstance(aliases, (list, tuple)) and len(aliases) > 0:
+            self.aliases = list(aliases)
+
+        # Aggregator para features temporais (expõe parâmetros compatíveis com realtime_mediapipe)
+        self.aggregator = MinuteAggregator(window_sec=window_sec, bucket_sec=bucket_sec, warmup_sec=warmup_sec)
+
+        # Guarda os parâmetros para debug/inspeção
+        self._cfg = dict(window_sec=window_sec, bucket_sec=bucket_sec, warmup_sec=warmup_sec, threshold_shift=self.threshold_shift)
         
         # Estado do monitor
         self.cap = None
@@ -95,17 +108,16 @@ class MicrogestureMonitor:
         # Cooldown mínimo entre alertas (segundos) para evitar spam
         self.alert_cooldown = 300  # 5 minutos por padrão
         self.last_alert_time = 0
-        # Classes de microgestos a ignorar para alertas (novo modelo 'stress.keras' retorna 3 classes)
-        # 0 = sinais de estresse, 1 = não estresse, 2 = postural
-        # Ignoramos a classe 1 (não estresse) ao contar repetições
+
         self._excluded_posture_classes = {1}
         
-        # Aliases para features faciais
-        self.aliases = [
-            "SleftEyeClosed", "SrightEyeClosed", "SAu43_EyesClosed",
-            "SmouthOpen", "SAu25_LipsPart", "SAu26_JawDrop", "SAu27_MouthStretch",
-            "HeadYaw", "HeadPitch", "HeadRoll"
-        ]
+        # Aliases para features faciais (preserva override via construtor)
+        if not hasattr(self, 'aliases') or not getattr(self, 'aliases'):
+            self.aliases = [
+                "SleftEyeClosed", "SrightEyeClosed", "SAu43_EyesClosed",
+                "SmouthOpen", "SAu25_LipsPart", "SAu26_JawDrop", "SAu27_MouthStretch",
+                "HeadYaw", "HeadPitch", "HeadRoll"
+            ]
         
         # Índices dos landmarks importantes
         self.idx = {
@@ -203,9 +215,9 @@ class MicrogestureMonitor:
                 current_dir = Path.cwd()
                 posture_paths.extend([
                     current_dir / posture_model_path,
-                    current_dir / "facesense_posture" / "models" / "stress.keras",
-                    current_dir / ".." / "facesense_posture" / "models" / "stress.keras",
-                    Path(__file__).parent.parent / "models" / "stress.keras"
+                    current_dir / "facesense_posture" / "models" / "best_model.keras",
+                    current_dir / ".." / "facesense_posture" / "models" / "best_model.keras",
+                    Path(__file__).parent.parent / "models" / "best_model.keras"
                 ])
             
             # Carregamento com TensorFlow/Keras
@@ -254,8 +266,12 @@ class MicrogestureMonitor:
             raise RuntimeError("Não foi possível acessar a câmera!")
             
         self.running = True
-        self.aggregator.reset()
-        print("🧠 Monitor integrado (microgesture + postura) iniciado!")
+        # reseta aggregator e imprime parâmetros úteis para debug
+        try:
+            self.aggregator.reset()
+            print(f"🧠 Monitor integrado (microgesture + postura) iniciado! config={self._cfg}")
+        except Exception:
+            pass
 
     def parar(self):
         """Para o monitoramento"""
@@ -283,8 +299,40 @@ class MicrogestureMonitor:
         
         # Processa face e pose
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_results = self.face_mesh.process(rgb)
-        pose_results = self.pose.process(rgb)
+        # FaceMesh pode por vezes lançar erros internos (ex: '_graph is None in SolutionBase')
+        # em alguns ambientes. Tratamos e tentamos reinicializar o FaceMesh automaticamente.
+        try:
+            face_results = self.face_mesh.process(rgb)
+        except Exception as e:
+            msg = str(e)
+            print(f"Erro ao processar FaceMesh: {msg}")
+            if "_graph is None" in msg or "SolutionBase" in msg:
+                try:
+                    print("Tentando reiniciar FaceMesh...")
+                    try:
+                        self.face_mesh.close()
+                    except Exception:
+                        pass
+                    self.face_mesh = self.mp_face_mesh.FaceMesh(
+                        static_image_mode=False,
+                        max_num_faces=1,
+                        refine_landmarks=True,
+                        min_detection_confidence=0.6,
+                        min_tracking_confidence=0.6
+                    )
+                    face_results = self.face_mesh.process(rgb)
+                    print("FaceMesh reiniciado com sucesso.")
+                except Exception as e2:
+                    print(f"Falha ao reiniciar FaceMesh: {e2}")
+                    face_results = None
+            else:
+                face_results = None
+
+        try:
+            pose_results = self.pose.process(rgb)
+        except Exception as e:
+            print(f"Erro ao processar Pose: {e}")
+            pose_results = None
         
         # Extrai features faciais
         vals = {a: np.nan for a in self.aliases}
@@ -320,123 +368,95 @@ class MicrogestureMonitor:
             if self.draw_debug:
                 self._draw_pose(frame, pose_results)
 
-            # --- Registro histórico de classes de postura para lógica de alertas ---
+            # Registro histórico de classes de postura e lógica de alertas
+            # Janela: últimos 5 minutos. Contagem de mesma classe > 3 -> alerta
             try:
                 now_ts = time.time()
 
-                # Se houve oclusão de braços/mãos, pulamos a lógica baseada
-                # em classes de postura e apenas tocamos alerta sonoro se
-                # o detector facial reportou ALTO mais de uma vez nos últimos 5 min.
-                if posture_status == 'occluded' or getattr(self, 'last_posture_occluded', False):
-                    now = now_ts
-                    cutoff = now - (5 * 60)
-                    # Limpa micro_high_history para janela de 5 minutos
-                    while self.micro_high_history and self.micro_high_history[0] < cutoff:
-                        self.micro_high_history.popleft()
+                # Se posture_status for inteiro, registra no histórico
+                if isinstance(posture_status, int):
+                    self.posture_history.append((now_ts, int(posture_status)))
 
-                    # Se ALTO ocorreu mais de uma vez, toca som (sem popup)
-                    if len(self.micro_high_history) > 1:
-                        if now - self.last_alert_time > self.alert_cooldown:
+                # Mantém apenas os últimos 5 minutos
+                cutoff = now_ts - (5 * 60)
+                while self.posture_history and self.posture_history[0][0] < cutoff:
+                    self.posture_history.popleft()
+
+                # Conta ocorrências por classe dentro da janela
+                counts = {}
+                for _, c in self.posture_history:
+                    counts[c] = counts.get(c, 0) + 1
+
+                    # DEBUG: mostra estado atual do histórico de postura para diagnóstico
+                    try:
+                        recent = list(self.posture_history)[-12:]
+                        print(f"[MICRO DEBUG] posture_class={posture_status} conf={posture_conf:.3f} recent_history={recent} counts={counts} last_proba={self.last_proba}")
+                    except Exception:
+                        pass
+
+                # Conjunto de classes a ignorar para alertas (especificadas)
+                ignore_classes = {15, 16, 22, 23}
+                # também inclui qualquer classe previamente excluída
+                try:
+                    ignore_classes = ignore_classes.union(set(self._excluded_posture_classes))
+                except Exception:
+                    pass
+
+                # Determina nível facial atual usando last_proba
+                level = None
+                if self.last_proba is not None and np.isfinite(self.last_proba):
+                    if self.last_proba >= 0.65:
+                        level = 'ALTO'
+                    elif self.last_proba >= 0.45:
+                        level = 'MÉDIO'
+                    else:
+                        level = 'BAIXO'
+
+                # Para cada classe com contagem alta, decide ação
+                for cls, cnt in counts.items():
+                    if cls in ignore_classes:
+                        continue
+                    if cnt > 3 and level is not None:
+                        now = now_ts
+                        if now - self.last_alert_time <= self.alert_cooldown:
+                            # ainda em cooldown
+                            break
+
+                        # Nível MÉDIO -> popup discreto no canto
+                        if level == 'MÉDIO' and self.update_callback:
+                            msg = (
+                                f"Detector facial: nível MÉDIO.\n"
+                                f"Classe {cls} repetida {cnt}x nos últimos 5 min.\n"
+                                "Sugestão: faça uma pausa curta e relaxe."
+                            )
+                            try:
+                                self.update_callback('alert_corner', msg)
+                            except Exception:
+                                pass
+                            self.last_alert_time = now
+                            break
+
+                        # Nível ALTO -> popup central + som
+                        if level == 'ALTO' and self.update_callback:
+                            msg = (
+                                f"ALERTA — Sinais de estresse detectados (nível ALTO).\n"
+                                f"Classe {cls} repetida {cnt}x nos últimos 5 min.\n"
+                                "Recomendação: pare por 2–5 minutos e relaxe."
+                            )
+                            try:
+                                self.update_callback('alert_center', msg)
+                            except Exception:
+                                pass
+                            # reproduz som de alerta se disponível
                             if self.beep_callback:
                                 try:
                                     self.beep_callback()
                                 except Exception:
                                     pass
                             self.last_alert_time = now
-                    # Não registramos classes de postura enquanto houver oclusão
-                    # e não executamos a lógica de repetição de classes.
-                else:
-                    class_idx = None
-                    # Espera-se que posture_status seja um int (classe prevista)
-                    if isinstance(posture_status, int):
-                        class_idx = posture_status
-                    elif isinstance(posture_status, (list, tuple)) and len(posture_status) > 0:
-                        # caso retornem (class, conf)
-                        possible = posture_status[0]
-                        if isinstance(possible, int):
-                            class_idx = possible
-
-                    if class_idx is not None:
-                        self.posture_history.append((now_ts, int(class_idx)))
-
-                    # Mantém apenas os últimos 5 minutos
-                    cutoff = now_ts - (5 * 60)
-                    while self.posture_history and self.posture_history[0][0] < cutoff:
-                        self.posture_history.popleft()
-
-                    # Conta ocorrências por classe
-                    counts = {}
-                    for _, c in self.posture_history:
-                        counts[c] = counts.get(c, 0) + 1
-
-                    # Verifica classes repetidas e decide ação baseada no nível facial
-                    for cls, cnt in counts.items():
-                        # Ignora classes configuradas
-                        if cls in self._excluded_posture_classes:
-                            continue
-
-                        # Determina nível aproximado de estresse usando limiares fixos
-                        # Segue realtime_mediapipe: ALTO >=0.65, MÉDIO >=0.45
-                        level = None
-                        if self.last_proba is not None and np.isfinite(self.last_proba):
-                            if self.last_proba >= 0.65:
-                                level = 'ALTO'
-                            elif self.last_proba >= 0.45:
-                                level = 'MÉDIO'
-                            else:
-                                level = 'BAIXO'
-
-                        now = now_ts
-
-                        # Caso específico: quando o detector facial indica BAIXO,
-                        # só tocamos um alarme sonoro se houver pelo menos 3
-                        # ocorrências da classe 2 (postural) nos últimos 5 minutos.
-                        if level == 'BAIXO' and cls == 2 and cnt >= 3:
-                            if now - self.last_alert_time > self.alert_cooldown:
-                                if self.beep_callback:
-                                    try:
-                                        self.beep_callback()
-                                    except Exception:
-                                        pass
-                                self.last_alert_time = now
-                            break
-
-                        # Para níveis MÉDIO ou ALTO, mantemos o comportamento anterior
-                        if cnt > 3:
-                            # Dispara alertas apenas para MÉDIO e ALTO
-                            if level in ('MÉDIO', 'ALTO'):
-                                if now - self.last_alert_time > self.alert_cooldown:
-                                    if level == 'MÉDIO' and self.update_callback:
-                                        msg = (
-                                            f"Detector de estresse: nível MÉDIO.\n"
-                                            f"Detector de microgestos: classe {cls} repetida {cnt}x nos últimos 5 min.\n"
-                                            "Sugestão: faça uma pausa curta e relaxe."
-                                        )
-                                        try:
-                                            self.update_callback('alert_corner', msg)
-                                        except Exception:
-                                            pass
-                                        self.last_alert_time = now
-                                    elif level == 'ALTO' and self.update_callback:
-                                        msg = (
-                                            f"ALERTA — Sinais de estresse detectados (nível ALTO).\n"
-                                            f"Detector de microgestos: classe {cls} repetida {cnt}x nos últimos 5 min.\n"
-                                            "Recomendação: pare por 2–5 minutos e relaxe."
-                                        )
-                                        try:
-                                            self.update_callback('alert_center', msg)
-                                        except Exception:
-                                            pass
-                                        self.last_alert_time = now
-                                        # Reproduz som de alerta se disponível
-                                        if self.beep_callback:
-                                            try:
-                                                self.beep_callback()
-                                            except Exception:
-                                                pass
                             break
             except Exception as e:
-                print(f"Erro ao processar histórico de postura para alertas: {e}")
+                print(f"Erro ao processar histórico/alertas de postura: {e}")
         
         # Desenha interface (somente se permitido)
         if getattr(self, 'show_on_screen', True):
@@ -517,37 +537,103 @@ class MicrogestureMonitor:
     def _classificar_estresse(self, now_ts):
         """Retorna predição pura do modelo de estresse"""
         try:
+            # Debug: mostra se aggregator está bloqueado e quantas feature_names temos
+            try:
+                print(f"[MICRO DEBUG] aggregator.locked={self.aggregator.locked} feature_names={len(self.feature_names)}")
+            except Exception:
+                pass
+
             row = self.aggregator.build_row_last_minute(self.feature_names, now_ts)
-            if row is not None:
-                X = pd.DataFrame([row], columns=self.feature_names)
-                proba = float(self.microgesture_model.predict_proba(X)[:, 1][0])
-                
-                # Armazena valor puro sem classificação
-                self.last_proba = proba
-                self.nivel_estresse = "RAW"  # Indica valor puro
-                
-                print(f"[MICROGESTURE] Valor puro={proba:.6f}")
-                
-                # Callback para UI com valor puro
-                if self.update_callback:
-                    status = "raw_microgesture"
-                    dica = f"Microgesture raw: {proba:.6f}"
-                    self.update_callback(status, dica)
-                # Registra eventos ALTO para lógica de oclusão (>= 0.65)
+            if row is None:
+                print("[MICRO DEBUG] build_row_last_minute returned None (não há dados suficientes ou janela vazia)")
+            else:
                 try:
-                    if np.isfinite(proba) and proba >= 0.65:
-                        now = time.time()
-                        self.micro_high_history.append(now)
-                        # Mantém apenas os últimos 5 minutos
-                        cutoff = now - (5 * 60)
-                        while self.micro_high_history and \
-                                self.micro_high_history[0] < cutoff:
-                            self.micro_high_history.popleft()
-                except Exception:
-                    pass
+                    X = pd.DataFrame([row], columns=self.feature_names)
+                    print(f"[MICRO DEBUG] Built DataFrame X shape={X.shape}")
+                except Exception as e:
+                    print(f"[MICRO DEBUG] Erro ao construir DataFrame X: {e}")
+                    X = None
+
+                if X is not None:
+                    try:
+                        # Alguns modelos podem não implementar predict_proba; tenta com predict se necessário
+                        if hasattr(self.microgesture_model, 'predict_proba'):
+                            probs = self.microgesture_model.predict_proba(X)
+                            proba = float(probs[:, 1][0])
+                        else:
+                            preds = self.microgesture_model.predict(X)
+                            # assume-se saída contínua entre 0 e 1
+                            proba = float(preds[0])
+
+                        # Armazena valor puro sem classificação
+                        self.last_proba = proba
+                        self.nivel_estresse = "RAW"
+                        print(f"[MICROGESTURE] Valor puro={proba:.6f}")
+
+                        # Callback para UI com valor puro
+                        if self.update_callback:
+                            status = "raw_microgesture"
+                            dica = f"Microgesture raw: {proba:.6f}"
+                            try:
+                                self.update_callback(status, dica)
+                            except Exception:
+                                pass
+
+                        # Registra eventos ALTO para lógica de oclusão (>= 0.65)
+                        try:
+                            if np.isfinite(proba) and proba >= 0.65:
+                                now = time.time()
+                                self.micro_high_history.append(now)
+                                cutoff = now - (5 * 60)
+                                while self.micro_high_history and self.micro_high_history[0] < cutoff:
+                                    self.micro_high_history.popleft()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[MICRO DEBUG] Erro ao chamar o modelo microgesture.predict_proba/predict: {e}")
                     
         except Exception as e:
             print(f"Erro na predição: {e}")
+
+    def force_classify_short_window(self, seconds=10):
+        """Força uma classificação usando uma janela curta (útil para testes quando o warmup é longo).
+        Retorna a probabilidade bruta ou None se não houver dados suficientes.
+        """
+        try:
+            now = time.time()
+            df = self.aggregator._window_df(now, min(seconds, self.aggregator.bucket_sec))
+            if df.empty:
+                print(f"[MICRO DEBUG] force_classify_short_window: janela de {seconds}s vazia")
+                return None
+
+            z = self.aggregator._zscore(df)
+            agg = {}
+            for alias in self.aggregator.aliases:
+                col = alias + "_z"
+                if col in z.columns:
+                    v = z[col].dropna().values.astype(float)
+                    agg[f"{col}_mean"] = float(np.nanmean(v)) if v.size else np.nan
+                    agg[f"{col}_p90"] = self.aggregator._p90(v)
+                    agg[f"{col}_jitter"] = self.aggregator._jitter(v)
+
+            # monta row alinhada com feature_names
+            row = {name: agg.get(name, np.nan) for name in self.feature_names}
+            X = pd.DataFrame([row], columns=self.feature_names)
+
+            # chama o modelo (igual à lógica principal)
+            if hasattr(self.microgesture_model, 'predict_proba'):
+                probs = self.microgesture_model.predict_proba(X)
+                proba = float(probs[:, 1][0])
+            else:
+                preds = self.microgesture_model.predict(X)
+                proba = float(preds[0])
+
+            self.last_proba = proba
+            print(f"[MICRO DEBUG] force_classify_short_window produced proba={proba:.6f}")
+            return proba
+        except Exception as e:
+            print(f"[MICRO DEBUG] force_classify_short_window error: {e}")
+            return None
 
     def _draw_landmarks(self, frame, face_landmarks, w, h):
         """Desenha landmarks faciais principais"""
@@ -816,50 +902,53 @@ class MinuteAggregator:
         """Retorna predição pura do modelo Keras"""
         try:
             # Extrai features do frame para o modelo Keras
-            # Agora _extrair_features_postura retorna (features, occluded)
-            features, occluded = self._extrair_features_postura(frame, pose_results)
+            features, _ = self._extrair_features_postura(frame, pose_results)
 
-            # Se houver oclusão de braços/mãos, não confiamos na predição
-            if occluded:
-                # Marca estado e retorna indicador de oclusão
-                self.last_posture_occluded = True
-                self.last_posture_class = None
-                self.last_posture_confidence = 0.0
-                self.last_posture_label = 'occluded'
-                # limpa predição crua
-                self.last_posture_prediction = None
-                return 'occluded', 0.0
-
-            # Faz predição
+            # Faz predição (vetor bruto)
             prediction = self.posture_model.predict(features, verbose=0)[0]
 
-            # Interpreta saída: classe e confiança (sem traduzir para 'boa/ruim')
-            if prediction.size == 1:
-                # Modelo de saída escalar
+            # Interpreta saída: index da classe e confiança máxima
+            if getattr(prediction, 'size', None) == 1:
                 class_idx = 0
                 confidence = float(prediction[0])
             else:
                 class_idx = int(np.argmax(prediction))
                 confidence = float(np.max(prediction))
 
-            # Guarda último resultado para UI/app
+            # Armazena resultados brutos para relatórios/UI
             self.last_posture_class = class_idx
             self.last_posture_confidence = confidence
-            # Armazena predição crua (lista de floats) para relatórios
             try:
-                # prediction pode ser numpy array
                 self.last_posture_prediction = (prediction.tolist() if hasattr(prediction, 'tolist') else list(prediction))
             except Exception:
                 self.last_posture_prediction = None
             self.last_posture_occluded = False
-            # Mapear classes (novo modelo 'stress.keras'): 0=sinais de estresse, 1=não estresse, 2=postural
-            try:
-                label_map = {0: 'sinais_estresse', 1: 'nao_estresse', 2: 'postural'}
-                self.last_posture_label = label_map.get(int(class_idx), 'desconhecido')
-            except Exception:
-                self.last_posture_label = None
 
-            # Retorna a classe prevista e a confiança bruta
+            # Tenta carregar nomes legíveis se existir arquivo; caso contrário mantém class_{i}
+            try:
+                num_classes = int(getattr(prediction, 'size', len(prediction)))
+            except Exception:
+                num_classes = None
+
+            try:
+                if num_classes == 3:
+                    label_map = {0: 'sinais_estresse', 1: 'nao_estresse', 2: 'postural'}
+                    self.last_posture_label = label_map.get(int(class_idx), f'class_{class_idx}')
+                else:
+                    labels_path = Path(__file__).parent.parent / "models" / "best_model_labels.json"
+                    if labels_path.exists():
+                        with open(labels_path, 'r', encoding='utf-8') as lf:
+                            labels = json.load(lf)
+                        if isinstance(labels, (list, tuple)) and num_classes is not None and len(labels) >= num_classes:
+                            self.last_posture_label = labels[int(class_idx)]
+                        else:
+                            self.last_posture_label = f'class_{class_idx}'
+                    else:
+                        self.last_posture_label = f'class_{class_idx}'
+            except Exception:
+                self.last_posture_label = (f'class_{class_idx}' if class_idx is not None else None)
+
+            # Retorna a classe prevista e a confiança bruta (mantém compatibilidade)
             return class_idx, confidence
             
         except Exception as e:
@@ -868,57 +957,16 @@ class MinuteAggregator:
     
     def _extrair_features_postura(self, frame, pose_results):
         """Extrai features do frame para o modelo Keras de postura"""
-        # Checa oclusão de braços/mãos usando visibilidade/landmarks do Pose
-        occluded = False
-        try:
-            lm = pose_results.pose_landmarks.landmark
-            # Índices importantes para braços/mãos
-            left_wrist = self.mp_pose.PoseLandmark.LEFT_WRIST.value
-            right_wrist = self.mp_pose.PoseLandmark.RIGHT_WRIST.value
-            left_elbow = self.mp_pose.PoseLandmark.LEFT_ELBOW.value
-            right_elbow = self.mp_pose.PoseLandmark.RIGHT_ELBOW.value
-            # Verifica visibilidade dos pontos chave do braço/punho
-            check_idxs = [left_wrist, right_wrist, left_elbow, right_elbow]
-            low_vis = 0
-            for idx in check_idxs:
-                if idx < len(lm):
-                    lm_k = lm[idx]
-                    vis = getattr(lm_k, 'visibility', None)
-                    # Se temos visibilidade, considera oclusão quando for baixa
-                    if vis is not None:
-                        if (not np.isfinite(vis)) or (vis < 0.35):
-                            low_vis += 1
-                    else:
-                        # Sem visibility, checa coordenadas inválidas como ausência
-                        bad_coords = (not np.isfinite(lm_k.x) or not np.isfinite(lm_k.y))
-                        at_origin = (lm_k.x == 0 and lm_k.y == 0)
-                        if bad_coords or at_origin:
-                            low_vis += 1
-
-            # Se a maioria dos pontos do braço estiver com baixa visibilidade,
-            # consideramos o frame com oclusão das mãos/antebraços.
-            if low_vis >= 3:
-                occluded = True
-        except Exception:
-            # Em caso de erro, não assumimos confiança — marca como oclusão conservadora
-            occluded = True
-
-        # Se o modelo de postura não estiver disponível, retorna também como oclusão
-        if self.posture_model is None:
-            occluded = True
-
-        # Se houve oclusão, ainda retornamos um batch válido para manter a
-        # interface, mas a classificação será ignorada pelo chamador.
+        # Extrai imagem em escala de cinza e redimensiona para o input do modelo
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame_resized = cv2.resize(gray, (99, 200))
 
-        # Normaliza
+        # Normaliza e prepara batch
         frame_normalized = frame_resized.astype(np.float32) / 255.0
-
-        # Adiciona dimensão do batch
         frame_batch = np.expand_dims(frame_normalized, axis=0)
 
-        return frame_batch, occluded
+        # Não fazemos checagem de oclusão — retornamos sempre um batch válido
+        return frame_batch, False
     
     def _draw_pose(self, frame, pose_results):
         """Desenha landmarks de pose"""

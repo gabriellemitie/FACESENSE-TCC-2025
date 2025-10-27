@@ -14,7 +14,7 @@ from PySide6.QtGui import QImage, QPixmap, QFont
 from PySide6.QtCore import QTimer, Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
-
+from modules.posture_model import PostureMonitor
 # ===== IMPORTA O MÓDULO DE MICROGESTURE =====
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -75,6 +75,7 @@ class PosturaApp(QMainWindow):
         self.btn_iniciar = QPushButton("▶️ Iniciar")
         self.btn_pausar = QPushButton("⏸️ Pausar")
         self.btn_encerrar = QPushButton("⏹️ Encerrar")
+        self.btn_test_sound = QPushButton("🔊 Testar som")
         for btn in [self.btn_iniciar, self.btn_pausar, self.btn_encerrar]:
             btn.setFixedHeight(45)
             btn.setStyleSheet("""
@@ -84,11 +85,15 @@ class PosturaApp(QMainWindow):
                 QPushButton:hover { background-color: #555; }
                 QPushButton:pressed { background-color: #222; }
             """)
+        # estilo e tamanho para o botão de teste de som
+        self.btn_test_sound.setFixedHeight(45)
+        self.btn_test_sound.setStyleSheet("background-color: #2b2b2b; color: #fff; border-radius: 8px; font-size: 14px;")
 
         layout_botoes = QHBoxLayout()
         layout_botoes.addWidget(self.btn_iniciar)
         layout_botoes.addWidget(self.btn_pausar)
         layout_botoes.addWidget(self.btn_encerrar)
+        layout_botoes.addWidget(self.btn_test_sound)
 
         vbox_monitor = QVBoxLayout()
         vbox_monitor.addWidget(self.video_label)
@@ -135,17 +140,34 @@ class PosturaApp(QMainWindow):
         
         self.beep = beep_callback
 
+        # conecta o botão de teste de som
+        try:
+            self.btn_test_sound.clicked.connect(self._on_test_sound)
+        except Exception:
+            pass
+
         # ========= MÓDULO INTEGRADO (MICROGESTURE + POSTURA) ==========
         self.monitor_postura = MicrogestureMonitor(
             model_path="models/model_face_temporal.pkl",
             features_json_path="models/features.json",
-            # Usar o classificador de microgestos 'stress.keras'
-            posture_model_path="models/stress.keras",
+            # Usar o classificador de microgestos 'best_model.keras' (24 classes)
+            posture_model_path="models/best_model.keras",
             beep_callback=self.beep,
             update_callback=self.atualizar_status_ui
         )
         # Não desenhar resultados sobre o frame (somente gravação em histórico)
         self.monitor_postura.show_on_screen = False
+
+        # ========= MONITOR DE POSTURA LEGACY (opcional) =========
+        # Instanciação do monitor legacy é feita mais abaixo, após criação dos
+        # controles de configuração (sliders, checkboxes). Isso evita tentar
+        # ler valores de widgets ainda não inicializados.
+        self.posture_monitor = None
+        # Usa o MicrogestureMonitor (integrado) por padrão — ele combina
+        # detector facial temporal e o classificador Keras (best_model.keras).
+        # Mantemos a instância legacy em `self.posture_monitor` apenas como
+        # fallback/manual, mas `self.active_monitor` aponta para o integrado.
+        self.active_monitor = self.monitor_postura
 
         # ========= ABA HISTÓRICO =========
         self.hist_label = QLabel("📊 Relatórios de monitoramento")
@@ -206,14 +228,39 @@ class PosturaApp(QMainWindow):
         self.checkbox_som = QCheckBox("Ativar alerta sonoro")
         self.checkbox_som.setChecked(True)
 
+        # ========== CHECKBOX PARA MOSTRAR PREDIÇÕES NA TELA ==========
+        self.checkbox_show_predictions = QCheckBox("Mostrar predições na tela")
+        self.checkbox_show_predictions.setChecked(False)
+
         # ========== ADICIONA AO FORM ==========
         form.addRow("⏱ Tempo de alerta (s):", layout_alerta)
         form.addRow("🕐 Lembrete de alongar (min):", layout_alongamento)
         form.addRow("🔊 Volume dos alertas (%):", layout_volume)
         form.addRow(self.checkbox_som)
+        form.addRow(self.checkbox_show_predictions)
+
+        # Conecta toggle para mostrar/ocultar labels numéricas
+        self.checkbox_show_predictions.stateChanged.connect(self._on_toggle_show_predictions)
 
         self.tab_config.setLayout(form)
 
+        # ===== Instancia o PostureMonitor legacy AGORA que os widgets existem =====
+        try:
+            if PostureMonitor is not None:
+                # Usa os valores iniciais dos sliders para configurar o monitor
+                self.posture_monitor = PostureMonitor(
+                    alerta_segundos=self.slider_alerta.value(),
+                    lembrete_alongar_min=self.slider_alongamento.value(),
+                    beep_callback=self.beep,
+                    update_callback=self.atualizar_status_ui
+                )
+                try:
+                    print(f"[App] PostureMonitor legacy instantiated: {self.posture_monitor is not None}, debounce={getattr(self.posture_monitor, 'DEBOUNCE_FRAMES', 'n/a')}")
+                except Exception:
+                    pass
+        except Exception as e:
+            print("Falha ao instanciar PostureMonitor legacy:", e)
+            self.posture_monitor = None
 
         # ========= CONEXÕES =========
         self.btn_iniciar.clicked.connect(self.iniciar_monitoramento)
@@ -223,10 +270,25 @@ class PosturaApp(QMainWindow):
     # ========== FUNÇÕES ==========
     def iniciar_monitoramento(self):
         try:
+            # Inicia ambos os monitores automaticamente (integrado + legacy se disponível)
+            # Configura parâmetros comuns e inicia o monitor integrado (MicrogestureMonitor)
             self.monitor_postura.ALERTA_SEGUNDOS_POSTURA = self.slider_alerta.value()
             self.monitor_postura.VOLUME = self.slider_volume.value() / 100
             self.monitor_postura.LEMBRETE_ALONGAR_MIN = self.slider_alongamento.value()
             self.monitor_postura.iniciar()
+
+            # Tenta iniciar o PostureMonitor legacy (se instanciado). Falhas aqui não impedem o integrado.
+            if self.posture_monitor is not None:
+                try:
+                    self.posture_monitor.ALERTA_SEGUNDOS_POSTURA = self.slider_alerta.value()
+                    self.posture_monitor.VOLUME = self.slider_volume.value() / 100
+                    self.posture_monitor.LEMBRETE_ALONGAR_MIN = self.slider_alongamento.value()
+                    self.posture_monitor.iniciar()
+                except Exception as e_post:
+                    print("Falha ao iniciar PostureMonitor legacy:", e_post)
+
+            # Mantemos compatibilidade: aponta active_monitor para o integrado
+            self.active_monitor = self.monitor_postura
         except Exception as e:
             QMessageBox.warning(self, "Erro", str(e))
             return
@@ -237,6 +299,21 @@ class PosturaApp(QMainWindow):
         self.alertas = 0
         self.historico = []
         self.timer.start(30)
+
+    def _on_test_sound(self):
+        """Handler do botão 'Testar som' — reproduz o som de alerta (respeita checkbox de som)."""
+        try:
+            # Reutiliza o callback de beep central (aplica mesma lógica da UI)
+            if callable(self.beep):
+                print("[App] Teste de som: acionando beep callback")
+                try:
+                    self.beep()
+                except Exception as e:
+                    print(f"[App] Erro ao chamar beep(): {e}")
+            else:
+                print("[App] Beep callback não disponível.")
+        except Exception as e:
+            print(f"[App] Erro no _on_test_sound: {e}")
 
     def pausar_monitoramento(self):
         if self.paused:
@@ -251,7 +328,13 @@ class PosturaApp(QMainWindow):
     def encerrar_monitoramento(self):
         """Finaliza o monitoramento e salva sessão"""
         self.timer.stop()
-        self.monitor_postura.parar()
+        # Para ambos os monitores se estiverem rodando
+        for m in [getattr(self, 'monitor_postura', None), getattr(self, 'posture_monitor', None)]:
+            if m is not None:
+                try:
+                    m.parar()
+                except Exception:
+                    pass
         self.video_label.clear()
         self.status_label.setText("🛑 Monitoramento encerrado.")
 
@@ -372,6 +455,15 @@ class PosturaApp(QMainWindow):
         else:
             self.status_label.setText(f"{'⚠️' if status == 'ruim' else '✅'} {dica}")
 
+    def _on_toggle_show_predictions(self, state):
+        """Mostra ou oculta as labels com os valores das predições."""
+        try:
+            show = state == Qt.Checked
+            self.micro_label.setVisible(show)
+            self.posture_label.setVisible(show)
+        except Exception:
+            pass
+
     def gerar_graficos_multiplos(self):
         """Gera até 8 gráficos, um por sessão (linha temporal de postura)"""
         if not self.historico_sessoes:
@@ -488,41 +580,100 @@ class PosturaApp(QMainWindow):
 
 
     def atualizar_frame(self):
-        if self.paused or not self.monitor_postura.running:
+        # Se pausado, não processa
+        if self.paused:
             return
 
-        frame, status, dica, cor = self.monitor_postura.processar_frame()
+        # Processa ambos os monitores (integrado + legacy) quando disponíveis.
+        frame_micro = None
+        frame_posture_legacy = None
+        try:
+            if getattr(self, 'monitor_postura', None) and getattr(self.monitor_postura, 'running', False):
+                frame_micro, status_micro, dica_micro, cor_micro = self.monitor_postura.processar_frame()
+        except Exception as e:
+            print("Erro ao processar frame MicrogestureMonitor:", e)
+
+        try:
+            if getattr(self, 'posture_monitor', None) and getattr(self.posture_monitor, 'running', False):
+                frame_posture_legacy, status_legacy, dica_legacy, cor_legacy = self.posture_monitor.processar_frame()
+        except Exception as e:
+            print("Erro ao processar frame PostureMonitor legacy:", e)
+
+        # Escolhe qual frame mostrar (preferência: microgesture integrado -> legacy)
+        frame = frame_micro if frame_micro is not None else frame_posture_legacy
         if frame is None:
             return
 
-        # Coleta valores do monitor (microgesture e postura)
+        # Coleta valores do monitor integrado (microgesture + Keras)
         micro_val = getattr(self.monitor_postura, 'last_proba', None)
         posture_class = getattr(self.monitor_postura, 'last_posture_class', None)
         posture_conf = getattr(self.monitor_postura, 'last_posture_confidence', None)
+        posture_label = getattr(self.monitor_postura, 'last_posture_label', None)
+        posture_pred = getattr(self.monitor_postura, 'last_posture_prediction', None)
 
-        # Armazena histórico com micro (+ postura classe e confiança)
+        # Coleta valores do monitor legacy (se houver)
+        legacy_status = None
+        legacy_dica = None
+        if getattr(self, 'posture_monitor', None):
+            legacy_status = locals().get('status_legacy', None)
+            legacy_dica = locals().get('dica_legacy', None)
+
+        # Armazena histórico agregando ambas as saídas
         entry = {
             "micro": float(micro_val) if micro_val is not None else None,
             "posture_class": int(posture_class) if posture_class is not None else None,
-            "posture_confidence": float(posture_conf) if posture_conf is not None else None
+            "posture_confidence": float(posture_conf) if posture_conf is not None else None,
+            "posture_label": posture_label,
+            "posture_prediction": posture_pred,
+            "legacy_posture_status": legacy_status,
+            "legacy_posture_dica": legacy_dica
         }
-        # Adiciona label e predição crua do modelo Keras (stress.keras)
-        posture_label = getattr(self.monitor_postura, 'last_posture_label', None)
-        posture_pred = getattr(self.monitor_postura, 'last_posture_prediction', None)
-        entry["posture_label"] = posture_label
-        entry["posture_prediction"] = posture_pred
         self.historico.append([time.time() - self.start_time, entry])
 
-            # Não exibimos os valores puros na UI por pedido do usuário;
-            # preservamos apenas mensagens de estado discretas se necessário.
+        # AtualIZA LABELS DE PREDIÇÃO (quando habilitado pelo usuário)
+        try:
+            if getattr(self, 'checkbox_show_predictions', None) and self.checkbox_show_predictions.isChecked():
+                try:
+                    micro_s = f"ESTRESSE: {float(micro_val):.2f}"
+                except Exception:
+                    micro_s = "ESTRESSE: --"
 
-        # Não atualizamos os labels numéricos na interface (ficam ocultos)
+                try:
+                    if posture_label is not None:
+                        label_str = str(posture_label)
+                    elif posture_class is not None:
+                        label_str = str(int(posture_class))
+                    else:
+                        label_str = "--"
+                except Exception:
+                    label_str = "--"
 
+                try:
+                    conf_s = f"{float(posture_conf):.2f}" if posture_conf is not None else "--"
+                except Exception:
+                    conf_s = "--"
+
+                self.micro_label.setText(micro_s)
+                self.posture_label.setText(f"MICROGESTO CLASS: {label_str} (conf: {conf_s})")
+                self.micro_label.setVisible(True)
+                self.posture_label.setVisible(True)
+            else:
+                # mantém oculto quando desativado
+                try:
+                    self.micro_label.setVisible(False)
+                    self.posture_label.setVisible(False)
+                except Exception:
+                    pass
+        except Exception as e:
+            print("Erro ao atualizar labels visuais:", e)
+
+        # Atualiza timer UI
         tempo_decorrido = time.time() - self.start_time
         minutos = int(tempo_decorrido // 60)
         segundos = int(tempo_decorrido % 60)
         self.timer_label.setText(f"⏱ Tempo monitorado: {minutos:02d}:{segundos:02d}")
 
+        # Mostra frame (convertendo para QImage)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         qt_img = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_img).scaled(960, 540, Qt.AspectRatioMode.KeepAspectRatio)
