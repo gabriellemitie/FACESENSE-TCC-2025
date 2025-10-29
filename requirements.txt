@@ -11,7 +11,5 @@ mediapipe
 fastapi
 uvicorn
 imbalanced-learn
-torch 
-torchvision 
-torchaudio
 PySide6
+simpleaudio
