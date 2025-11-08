@@ -41,6 +41,7 @@ jobs:
     - name: Restore Gradle files from repo (overwrite generated)
       run: |
         # After flutter create, restore our repo Gradle snippets to ensure TF deps are present
+        # If repo contains prepared gradle files, restore them. Otherwise we'll patch the scaffold later.
         git checkout -- flutter_mobile/android/app/build.gradle || true
         git checkout -- flutter_mobile/android/build.gradle || true
         git checkout -- flutter_mobile/android/settings.gradle || true
@@ -52,11 +53,37 @@ jobs:
 
     - name: Ensure Android gradle config contains TFLite Select TF Ops dependency
       run: |
-        # overwrite the app/build.gradle with the prepared snippet if present in repo
-        if [ -f flutter_mobile/android/app/build.gradle ]; then
-          echo "Using existing flutter_mobile/android/app/build.gradle"
+        set -e
+        APP_GRADLE=flutter_mobile/android/app/build.gradle
+        ROOT_GRADLE=flutter_mobile/android/build.gradle
+
+        # Add mavenCentral() and google() to repositories if missing (root build.gradle)
+        if [ -f "$ROOT_GRADLE" ]; then
+          if ! grep -q "mavenCentral()" "$ROOT_GRADLE"; then
+            echo "Adding mavenCentral() to $ROOT_GRADLE"
+            sed -i '/repositories *{/a \        mavenCentral()' "$ROOT_GRADLE" || true
+          fi
+          if ! grep -q "google()" "$ROOT_GRADLE"; then
+            echo "Adding google() to $ROOT_GRADLE"
+            sed -i '/repositories *{/a \        google()' "$ROOT_GRADLE" || true
+          fi
+        fi
+
+        # Ensure app build.gradle has TensorFlow deps and packaging options
+        if [ -f "$APP_GRADLE" ]; then
+          echo "Patching $APP_GRADLE to include TensorFlow Select-TF-Ops and packagingOptions"
+
+          # Add dependencies if not present
+          if ! grep -q "tensorflow-lite-select-tf-ops" "$APP_GRADLE"; then
+            sed -i "/dependencies *{/,/}/ {/dependencies *{/a \    implementation 'org.tensorflow:tensorflow-lite:2.19.1'\n    implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.19.1'" "$APP_GRADLE" || true
+          fi
+
+          # Add packagingOptions block inside android {} if not present
+          if ! grep -q "libtensorflowlite_flex_jni.so" "$APP_GRADLE"; then
+            sed -i "/android *{/,/}/ {/android *{/a \    packagingOptions {\n        pickFirst 'lib/**/libtensorflowlite_flex_jni.so'\n        pickFirst 'lib/**/libtensorflowlite_jni.so'\n    }" "$APP_GRADLE" || true
+          fi
         else
-          echo "No app/build.gradle found; creating basic file"
+          echo "$APP_GRADLE not found; leaving scaffold app/build.gradle as-is (flutter create should have created it)"
         fi
 
     - name: Get Flutter packages
