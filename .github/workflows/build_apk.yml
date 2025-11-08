@@ -45,8 +45,21 @@ jobs:
         # If the android gradle wrapper is missing or incomplete, recreate scaffold
         if [ ! -f flutter_mobile/android/gradle/wrapper/gradle-wrapper.properties ] || [ ! -f flutter_mobile/android/gradlew ]; then
           echo "Gradle wrapper files missing or incomplete -> recreating flutter_mobile scaffold"
+          # Backup existing flutter_mobile/lib if present (to preserve PoC sources)
+          if [ -d flutter_mobile/lib ]; then
+            echo "Backing up flutter_mobile/lib to /tmp/flutter_mobile_lib_backup"
+            rm -rf /tmp/flutter_mobile_lib_backup || true
+            cp -R flutter_mobile/lib /tmp/flutter_mobile_lib_backup || true
+          fi
           rm -rf flutter_mobile
           flutter create -t app flutter_mobile
+          # Restore PoC lib if we backed it up
+          if [ -d /tmp/flutter_mobile_lib_backup ]; then
+            echo "Restoring flutter_mobile/lib from backup"
+            rm -rf flutter_mobile/lib || true
+            cp -R /tmp/flutter_mobile_lib_backup flutter_mobile/lib || true
+            rm -rf /tmp/flutter_mobile_lib_backup || true
+          fi
           exit 0
         fi
 
