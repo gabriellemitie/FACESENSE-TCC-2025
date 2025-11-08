@@ -92,7 +92,7 @@ jobs:
           cat flutter_mobile/pubspec.yaml
         fi
 
-    - name: Debug: list flutter_mobile tree (for diagnostics)
+    - name: "Debug: list flutter_mobile tree (for diagnostics)"
       run: |
         echo "--- flutter_mobile tree ---"
         ls -la flutter_mobile || true
