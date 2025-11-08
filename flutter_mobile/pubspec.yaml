@@ -3,7 +3,8 @@ description: Minimal Flutter skeleton to run the converted TFLite model on-devic
 publish_to: 'none'
 version: 0.0.1
 environment:
-  sdk: ">=2.18.0 <3.0.0"
+  # Allow Dart 3 (used by recent Flutter releases) so `flutter pub get` works on CI
+  sdk: ">=2.18.0 <4.0.0"
 
 dependencies:
   flutter:
