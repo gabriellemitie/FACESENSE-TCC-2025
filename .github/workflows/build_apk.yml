@@ -92,6 +92,50 @@ jobs:
           cat flutter_mobile/pubspec.yaml
         fi
 
+    - name: Debug: list flutter_mobile tree (for diagnostics)
+      run: |
+        echo "--- flutter_mobile tree ---"
+        ls -la flutter_mobile || true
+        echo "--- flutter_mobile lib ---"
+        ls -la flutter_mobile/lib || true
+
+    - name: Ensure PoC entrypoint exists (lib/main.dart)
+      run: |
+        set -e
+        TARGET=flutter_mobile/lib/main.dart
+        echo "Checking for $TARGET"
+        if [ -f "$TARGET" ]; then
+          echo "$TARGET exists"
+          exit 0
+        fi
+
+        echo "$TARGET not found — attempting to recover PoC lib from known locations"
+        # Try repo-level flutter_mobile/lib (should exist in the repo clone)
+        if [ -d ./flutter_mobile/lib ]; then
+          echo "Repo has flutter_mobile/lib; listing contents:" && ls -la ./flutter_mobile/lib || true
+        fi
+
+        # Try top-level lib/ (fallback)
+        if [ -d ./lib ]; then
+          echo "Copying top-level lib/ -> flutter_mobile/lib"
+          rm -rf flutter_mobile/lib || true
+          cp -R ./lib flutter_mobile/
+        elif [ -d ./flutter_mobile_backup/lib ]; then
+          echo "Copying flutter_mobile_backup/lib -> flutter_mobile/lib"
+          rm -rf flutter_mobile/lib || true
+          cp -R ./flutter_mobile_backup/lib flutter_mobile/
+        elif [ -d ./flutter_mobile_src/lib ]; then
+          echo "Copying flutter_mobile_src/lib -> flutter_mobile/lib"
+          rm -rf flutter_mobile/lib || true
+          cp -R ./flutter_mobile_src/lib flutter_mobile/
+        else
+          echo "No source lib found in repo (checked ./lib, ./flutter_mobile_backup/lib, ./flutter_mobile_src/lib)."
+          echo "Listing working dir for debugging:" && ls -la || true
+          exit 1
+        fi
+
+        echo "Recovered lib; contents:" && ls -la flutter_mobile/lib || true
+
     - name: Ensure Android gradle config contains TFLite Select TF Ops dependency
       run: |
         set -e
