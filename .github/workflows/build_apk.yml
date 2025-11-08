@@ -195,9 +195,20 @@ jobs:
           echo "$APP_GRADLE not found; leaving scaffold app/build.gradle as-is (flutter create should have created it)"
         fi
 
-    - name: Get Flutter packages
+    - name: Get Flutter packages (verbose)
       working-directory: ./flutter_mobile
-      run: flutter pub get
+      run: |
+        set -e
+        echo "Running flutter pub get (verbose)"
+        flutter pub get --verbose || (echo "flutter pub get failed"; exit 1)
+        echo "--- pubspec.yaml ---"
+        sed -n '1,200p' pubspec.yaml || true
+        echo "--- pubspec.lock (if present) ---"
+        if [ -f pubspec.lock ]; then sed -n '1,200p' pubspec.lock; else echo "(no pubspec.lock)"; fi
+        echo "--- .dart_tool/package_config.json ---"
+        if [ -f .dart_tool/package_config.json ]; then sed -n '1,200p' .dart_tool/package_config.json; else echo "(no package_config.json)"; fi
+        echo "--- listing .dart_tool ---"
+        ls -la .dart_tool || true
 
     - name: Build debug APK
       working-directory: ./flutter_mobile
