@@ -64,6 +64,34 @@ jobs:
         mkdir -p flutter_mobile/assets
         cp facesense_posture/models/best_model_select.tflite flutter_mobile/assets/best_model_select.tflite || true
 
+    - name: Merge PoC Dart code and pubspec into scaffold
+      run: |
+        echo "Copying PoC Dart code and pubspec into flutter_mobile scaffold"
+        # If repo contains a lib/ (source for the PoC), overwrite scaffold lib
+        if [ -d ./flutter_mobile/lib ]; then
+          rm -rf flutter_mobile/lib
+        fi
+        if [ -d ./lib ]; then
+          # If top-level lib exists (unlikely), copy it
+          cp -R ./lib flutter_mobile/
+        fi
+        if [ -d ./flutter_mobile/lib ]; then
+          echo "flutter_mobile/lib is present in repo and kept"
+        else
+          # fallback: if PoC code exists at repo path flutter_mobile/lib (committed), copy it
+          if [ -d ./flutter_mobile_backup ]; then
+            cp -R ./flutter_mobile_backup/lib flutter_mobile/ || true
+          fi
+        fi
+
+        # Ensure the repo pubspec (if provided) overwrites scaffold pubspec so dependencies match
+        if [ -f ./flutter_mobile/pubspec.yaml ]; then
+          echo "Using flutter_mobile/pubspec.yaml from repo"
+        fi
+        if [ -f ./flutter_mobile/pubspec.yaml ]; then
+          cat flutter_mobile/pubspec.yaml
+        fi
+
     - name: Ensure Android gradle config contains TFLite Select TF Ops dependency
       run: |
         set -e
