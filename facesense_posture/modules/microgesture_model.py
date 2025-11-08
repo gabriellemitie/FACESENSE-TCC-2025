@@ -74,6 +74,7 @@ class MicrogestureMonitor:
         self.posture_model = None
         self.feature_names = []
         self.threshold_base = 0.5
+      
         self.threshold_shift = float(threshold_shift)  # Mais difícil classificar como estresse
         
         self._carregar_modelos(model_path, features_json_path, posture_model_path)
@@ -426,7 +427,6 @@ class MicrogestureMonitor:
                         if level == 'MÉDIO' and self.update_callback:
                             msg = (
                                 f"Detector facial: nível MÉDIO.\n"
-                                f"Classe {cls} repetida {cnt}x nos últimos 5 min.\n"
                                 "Sugestão: faça uma pausa curta e relaxe."
                             )
                             try:
@@ -440,7 +440,6 @@ class MicrogestureMonitor:
                         if level == 'ALTO' and self.update_callback:
                             msg = (
                                 f"ALERTA — Sinais de estresse detectados (nível ALTO).\n"
-                                f"Classe {cls} repetida {cnt}x nos últimos 5 min.\n"
                                 "Recomendação: pare por 2–5 minutos e relaxe."
                             )
                             try:

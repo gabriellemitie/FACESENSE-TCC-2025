@@ -1,0 +1,71 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Java (required for Android toolchain)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 'stable'
+
+    - name: Accept Android SDK licenses
+      run: |
+        yes | sdkmanager --licenses || true
+
+    - name: Ensure flutter_mobile exists and create project if missing
+      working-directory: ./flutter_mobile
+      run: |
+        # flutter create will generate missing android/ios folders if needed
+        flutter create . || true
+
+    - name: Restore Gradle files from repo (overwrite generated)
+      run: |
+        # After flutter create, restore our repo Gradle snippets to ensure TF deps are present
+        git checkout -- flutter_mobile/android/app/build.gradle || true
+        git checkout -- flutter_mobile/android/build.gradle || true
+        git checkout -- flutter_mobile/android/settings.gradle || true
+
+    - name: Copy TFLite model into Flutter assets
+      run: |
+        mkdir -p flutter_mobile/assets
+        cp facesense_posture/models/best_model_select.tflite flutter_mobile/assets/best_model_select.tflite || true
+
+    - name: Ensure Android gradle config contains TFLite Select TF Ops dependency
+      run: |
+        # overwrite the app/build.gradle with the prepared snippet if present in repo
+        if [ -f flutter_mobile/android/app/build.gradle ]; then
+          echo "Using existing flutter_mobile/android/app/build.gradle"
+        else
+          echo "No app/build.gradle found; creating basic file"
+        fi
+
+    - name: Get Flutter packages
+      working-directory: ./flutter_mobile
+      run: flutter pub get
+
+    - name: Build debug APK
+      working-directory: ./flutter_mobile
+      run: flutter build apk --debug --no-shrink
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: facesense-apk
+        path: flutter_mobile/build/app/outputs/flutter-apk/app-debug.apk

@@ -111,6 +111,10 @@ class PosturaApp(QMainWindow):
         self.paused = False
         self.alertas = 0
         self.historico = []
+        # FPS tracking: last timestamp, recent history for smoothing, and last display value
+        self.last_frame_time = None
+        self.fps_history = []  # list of recent fps samples for smoothing
+        self.fps_display = 0.0
 
         # ========= SOM =========
         def beep_callback():
@@ -603,6 +607,59 @@ class PosturaApp(QMainWindow):
         frame = frame_micro if frame_micro is not None else frame_posture_legacy
         if frame is None:
             return
+
+        # ----- FPS calculation and overlay -----
+        try:
+            now = time.time()
+            if self.last_frame_time is None:
+                dt = None
+            else:
+                dt = now - self.last_frame_time
+            self.last_frame_time = now
+
+            if dt is None or dt <= 0:
+                fps_current = 0.0
+            else:
+                fps_current = 1.0 / dt
+
+            # append and keep last N samples for smoothing
+            self.fps_history.append(fps_current)
+            if len(self.fps_history) > 10:
+                self.fps_history.pop(0)
+
+            # smoothed fps
+            if self.fps_history:
+                fps = sum(self.fps_history) / len(self.fps_history)
+            else:
+                fps = 0.0
+            self.fps_display = fps
+
+            # draw overlay at bottom-left of frame
+            try:
+                h, w = frame.shape[:2]
+                text = f"FPS: {self.fps_display:.2f}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 0.7
+                thickness = 2
+                (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
+                pad_x = 8
+                pad_y = 6
+
+                x1 = 10
+                y1 = h - 10 - text_h - pad_y
+                x2 = x1 + text_w + pad_x * 2
+                y2 = h - 10
+
+                # background rectangle (slightly transparent look via dark fill)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (30, 30, 30), -1)
+                # text (light color)
+                cv2.putText(frame, text, (x1 + pad_x, y2 - pad_y), font, scale, (230, 230, 230), thickness, cv2.LINE_AA)
+            except Exception:
+                # If any drawing error occurs, ignore and continue
+                pass
+        except Exception:
+            # don't let FPS calculation break frame processing
+            pass
 
         # Coleta valores do monitor integrado (microgesture + Keras)
         micro_val = getattr(self.monitor_postura, 'last_proba', None)

@@ -1,0 +1,11 @@
+rootProject.name = 'flutter_mobile'
+include ':app'
+
+// Ensure mavenCentral is used by Gradle to resolve TensorFlow dependencies
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}

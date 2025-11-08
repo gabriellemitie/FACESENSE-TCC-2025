@@ -1,0 +1,17 @@
+name: facesense_mobile
+description: Minimal Flutter skeleton to run the converted TFLite model on-device (proof of concept).
+publish_to: 'none'
+version: 0.0.1
+environment:
+  sdk: ">=2.18.0 <3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  tflite_flutter: ^0.10.0
+  tflite_flutter_helper: ^0.3.0
+  camera: ^0.10.0
+
+flutter:
+  assets:
+    - assets/best_model_select.tflite

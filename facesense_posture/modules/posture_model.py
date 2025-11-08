@@ -234,7 +234,7 @@ class PostureMonitor:
             self.pitch_media.append(pitch_cabeca_instant)
             pitch_cabeca = np.mean(self.pitch_media)
 
-            ruim_postura = (angulo_coluna > 6 or shoulder_diff > self.shoulder_ref + 0.02)
+            ruim_postura = (angulo_coluna > 4 or shoulder_diff > self.shoulder_ref + 0.01)
 
             # --- Cabeça caída por tempo prolongado ---
             if pitch_cabeca > self.ANGULO_CABECA_LIMITE:
