@@ -156,10 +156,6 @@ jobs:
             echo "Listing working dir for debugging:" && ls -la || true
             exit 1
           fi
-        else
-          echo "No source lib found in repo (checked ./lib, ./flutter_mobile_backup/lib, ./flutter_mobile_src/lib)."
-          echo "Listing working dir for debugging:" && ls -la || true
-          exit 1
         fi
 
         echo "Recovered lib; contents:" && ls -la flutter_mobile/lib || true
