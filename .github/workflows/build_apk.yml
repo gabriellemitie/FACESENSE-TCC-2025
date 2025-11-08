@@ -23,7 +23,10 @@ jobs:
     - name: Set up Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: 'stable'
+        # Pin a specific Flutter SDK version instead of 'stable' to avoid
+        # the "Unable to determine Flutter version for channel: stable" error.
+        # Adjust the version if you need a different Flutter release.
+        flutter-version: '3.10.6'
 
     - name: Accept Android SDK licenses
       run: |
