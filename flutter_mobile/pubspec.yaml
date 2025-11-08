@@ -21,3 +21,10 @@ dependencies:
 flutter:
   assets:
     - assets/best_model_select.tflite
+
+# Force exact compatible versions when CI's resolver is flaky or when
+# multiple transitive constraints lead to ambiguity on GitHub Actions.
+dependency_overrides:
+  tflite_flutter: 0.9.0
+  tflite_flutter_helper: 0.3.0
+  camera: 0.9.4+5
