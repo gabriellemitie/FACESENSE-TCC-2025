@@ -17,7 +17,7 @@ jobs:
         # Fetch full history to avoid shallow-checkout issues in CI
         fetch-depth: 0
 
-    - name: Debug: list repo root and flutter_mobile after checkout
+    - name: "Debug: list repo root and flutter_mobile after checkout"
       run: |
         echo "--- repo root ---"
         ls -la
