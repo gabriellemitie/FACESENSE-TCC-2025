@@ -1,8 +1,10 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:tflite_flutter_helper/tflite_flutter_helper.dart';
+// Use native MethodChannel bridge (FlexBridge) for model loading and inference
+// to avoid depending on the tflite_flutter plugin (which may use the old
+// Android v1 embedding in some versions). The native bridge loads the
+// Interpreter via reflection and attaches the Flex delegate when available.
 
 void main() {
   runApp(const MyApp());
@@ -16,48 +18,30 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  Interpreter? _interpreter;
+  bool _nativeModelLoaded = false;
   String _status = 'Idle';
   static const platform = MethodChannel('com.facesense.mobile/flex_bridge');
 
   @override
   void initState() {
     super.initState();
-    _loadModel();
+    // Use the native bridge to load the model (avoids plugin embedding issues).
+    _nativeLoadModel();
   }
 
-  Future<void> _loadModel() async {
-    setState(() => _status = 'Loading model...');
-    try {
-      // Attempt to load the tflite model included in assets
-      final interpreterOptions = InterpreterOptions();
-      // NOTE: If the model requires Flex/Select TF ops, you may need to
-      // include the Flex delegate native libraries in your Android/iOS build
-      // and create a Delegate using native code. tflite_flutter does not
-      // directly expose a Flex delegate factory that works without adding
-      // native support. See README.md for packaging instructions.
-
-      _interpreter = await Interpreter.fromAsset(
-        'assets/best_model_select.tflite',
-        options: interpreterOptions,
-      );
-
-      setState(() => _status = 'Model loaded');
-    } catch (e, st) {
-      setState(() => _status = 'Failed to load model: $e');
-      // Keep the full exception in console for debugging
-      // ignore: avoid_print
-      print(e);
-      // ignore: avoid_print
-      print(st);
-    }
-  }
+  // We intentionally don't use the Dart tflite plugin here. Instead we call
+  // the native FlexBridge (Kotlin) that loads the Interpreter and attaches
+  // Flex via reflection. This avoids pub dependency conflicts and Android v1
+  // embedding checks.
 
   Future<void> _nativeLoadModel() async {
     try {
       setState(() => _status = 'Calling native loadModel...');
       final res = await platform.invokeMethod('loadModel', {'asset': 'assets/best_model_select.tflite'});
-      setState(() => _status = 'Native loadModel: $res');
+      setState(() {
+        _status = 'Native loadModel: $res';
+        _nativeModelLoaded = true;
+      });
     } on PlatformException catch (e) {
       setState(() => _status = 'Native loadModel failed: ${e.message}');
     }
@@ -76,43 +60,16 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _runDummyInference() async {
-    if (_interpreter == null) {
-      setState(() => _status = 'Interpreter not loaded');
-      return;
-    }
-
-    try {
-      setState(() => _status = 'Running inference...');
-
-      // The original model expects shape (1, 200, 99) -> output (1, 24)
-      // Build a dummy input tensor with random floats to verify interpreter works
-      final inputShape = [1, 200, 99];
-      final outputShape = [1, 24];
-
-      // Create input buffer
-      final input = TensorBuffer.createFixedSize(List<int>.from(inputShape), TfLiteType.float32);
-      final rnd = Random();
-      final inputData = List.generate(200 * 99, (_) => (rnd.nextDouble() * 2 - 1).toDouble());
-      input.loadList(inputData, shape: inputShape);
-
-      final output = TensorBuffer.createFixedSize(List<int>.from(outputShape), TfLiteType.float32);
-
-      // Run inference
-      _interpreter!.run(input.buffer, output.buffer);
-
-      setState(() => _status = 'Inference done, output len=${output.getDoubleList().length}');
-    } catch (e, st) {
-      setState(() => _status = 'Inference failed: $e');
-      // ignore: avoid_print
-      print(e);
-      // ignore: avoid_print
-      print(st);
-    }
+    // Prefer the native bridge for inference. It will error if the native
+    // interpreter hasn't been loaded.
+    await _nativeRunInference();
   }
 
   @override
   void dispose() {
-    _interpreter?.close();
+    // The native interpreter will be cleaned up by the Android process when
+    // the app terminates; no Dart-side interpreter to close when using the
+    // native bridge.
     super.dispose();
   }
 
@@ -130,7 +87,7 @@ class _MyAppState extends State<MyApp> {
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: _runDummyInference,
-                child: const Text('Run dummy inference'),
+                child: const Text('Run dummy inference (native)'),
               ),
               const SizedBox(height: 12),
               const Text('Notes:'),

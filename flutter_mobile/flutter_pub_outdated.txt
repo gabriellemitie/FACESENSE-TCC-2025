@@ -1,0 +1,26 @@
+Showing outdated packages.
+[*] indicates versions that are not the latest available.
+
+Package Name              Current                Upgradable             Resolvable             Latest  
+
+direct dependencies:     
+camera                    *0.9.4+5 (overridden)  *0.9.4+5 (overridden)  *0.9.4+5 (overridden)  0.11.3  
+tflite_flutter            *0.9.0 (overridden)    *0.9.0 (overridden)    *0.9.0 (overridden)    0.12.1  
+tflite_flutter_helper     *0.3.0 (overridden)    *0.3.0 (overridden)    *0.3.0 (overridden)    0.3.1   (discontinued)  
+
+transitive dependencies: 
+archive                   *3.6.1                 *3.6.1                 *3.6.1                 4.0.7   
+camera_web                *0.2.1+6               *0.2.1+6               *0.2.1+6               0.3.5   
+characters                *1.4.0                 *1.4.0                 *1.4.0                 1.4.1   
+ffi                       *1.2.1                 *1.2.1                 *1.2.1                 2.1.4   
+image                     *3.3.0                 *3.3.0                 *3.3.0                 4.5.4   
+material_color_utilities  *0.11.1                *0.11.1                *0.11.1                0.13.0  
+meta                      *1.16.0                *1.16.0                *1.16.0                1.17.0  
+path_provider             *2.0.15                *2.0.15                *2.0.15                2.1.5   
+path_provider_windows     *2.0.7                 *2.0.7                 *2.0.7                 2.3.0   
+win32                     *2.6.1                 *2.6.1                 *2.6.1                 5.15.0  
+You are already using the newest resolvable versions listed in the 'Resolvable' column.
+Newer versions, listed in 'Latest', may not be mutually compatible.
+
+tflite_flutter_helper
+    Package tflite_flutter_helper has been discontinued. See https://dart.dev/go/package-discontinue

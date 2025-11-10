@@ -1,0 +1,38 @@
+// Snippet para colocar em flutter_mobile/android/app/build.gradle
+// ---------------------------------------------------------------
+// Adicione as dependências do TensorFlow Lite Select TF Ops (Flex)
+// dentro do bloco dependencies {
+//
+// implementation 'org.tensorflow:tensorflow-lite:2.19.1'
+// implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.19.1'
+//
+// Em seguida, dentro do bloco android { ... } adicione packagingOptions:
+//
+// android {
+//   compileSdkVersion 33
+//   defaultConfig {
+//     applicationId "com.facesense.mobile"
+//     minSdkVersion 21
+//     targetSdkVersion 33
+//   }
+//
+//   packagingOptions {
+//     pickFirst '**/libtensorflowlite_jni.so'
+//     pickFirst '**/libtensorflowlite_flex.so'
+//     pickFirst '**/libtensorflowlite_flex_jni.so'
+//     pickFirst '**/libtensorflowlite_framework.so'
+//   }
+// }
+
+// Certifique-se também que o repositório mavenCentral() esteja configurado no settings/root build.gradle:
+// allprojects {
+//   repositories {
+//     google()
+//     mavenCentral()
+//   }
+// }
+
+// Depois de adicionar, execute:
+// cd flutter_mobile
+// flutter pub get
+// flutter run

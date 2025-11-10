@@ -9,22 +9,19 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Use compatible versions: tflite_flutter_helper currently depends on tflite_flutter ^0.9.0
-  # so pin tflite_flutter to a compatible range to avoid resolver conflicts.
-  tflite_flutter: ^0.9.0
-  tflite_flutter_helper: ^0.3.0
-  # camera version must be compatible with tflite_flutter_helper (which
-  # currently requires camera ^0.9.4+5 or ^0.8.1+3). Pin to a compatible
-  # release to avoid resolver conflicts in CI.
-  camera: ^0.9.4+5
+  # The app uses a native MethodChannel bridge (FlexBridge) to load the
+  # TensorFlow Lite Interpreter and Flex delegate on Android. This avoids
+  # depending on the Dart tflite plugins which may pull in legacy Android
+  # v1 embedding code. Keep only camera in Dart dependencies.
+  # This PoC uses a native MethodChannel bridge for TensorFlow Lite. To
+  # avoid pulling in any plugin implementations that may include the old
+  # Android v1 embedding, we don't declare the `camera` plugin here. If
+  # you need camera functionality later, add it back and ensure the
+  # selected version uses the v2 embedding.
 
 flutter:
   assets:
     - assets/best_model_select.tflite
 
-# Force exact compatible versions when CI's resolver is flaky or when
-# multiple transitive constraints lead to ambiguity on GitHub Actions.
-dependency_overrides:
-  tflite_flutter: 0.9.0
-  tflite_flutter_helper: 0.3.0
-  camera: 0.9.4+5
+# No dependency_overrides in the PoC. Keep the Dart dependency graph minimal so
+# the Flutter tool won't load unrelated plugin sources from the pub-cache.
