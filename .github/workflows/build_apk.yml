@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -37,6 +40,25 @@ jobs:
         # the "Unable to determine Flutter version for channel: stable" error.
         # Adjust the version if you need a different Flutter release.
         flutter-version: '3.10.6'
+
+    - name: Install Android NDK and CMake
+      run: |
+        set -e
+        echo "Installing NDK 27.0.12077973 and CMake via sdkmanager"
+        yes | sdkmanager --install "ndk;27.0.12077973" "cmake;3.22.1" || true
+      shell: bash
+
+    - name: Configure local.properties for Android SDK/NDK
+      run: |
+        set -e
+        # Resolve Android SDK path (depends on runner/action setup)
+        SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+        echo "Using SDK_DIR=$SDK_DIR"
+        mkdir -p flutter_mobile/android || true
+        echo "sdk.dir=$SDK_DIR" > flutter_mobile/android/local.properties
+        echo "ndk.dir=$SDK_DIR/ndk/27.0.12077973" >> flutter_mobile/android/local.properties
+        echo "Wrote flutter_mobile/android/local.properties with sdk.dir and ndk.dir"
+      shell: bash
 
     - name: Accept Android SDK licenses
       run: |
@@ -224,7 +246,10 @@ jobs:
       id: create_release
       uses: actions/create-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Use a user-provided Personal Access Token (PAT) stored in repo secret REPO_PAT.
+        # This is necessary when the workflow needs to create releases from forks or when
+        # the default GITHUB_TOKEN doesn't have sufficient permissions in the repo context.
+        GITHUB_TOKEN: ${{ secrets.REPO_PAT }}
       with:
         tag_name: debug-${{ github.run_number }}
         release_name: facesense-debug-${{ github.run_number }}
@@ -235,9 +260,44 @@ jobs:
     - name: Upload APK to Release
       uses: actions/upload-release-asset@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.REPO_PAT }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: flutter_mobile/build/app/outputs/flutter-apk/app-debug.apk
         asset_name: facesense-app-debug.apk
         asset_content_type: application/vnd.android.package-archive
+
+    - name: Upload APK to transfer.sh (public temporary link)
+      if: success()
+      run: |
+        APK_PATH="flutter_mobile/build/app/outputs/flutter-apk/app-debug.apk"
+        if [ ! -f "$APK_PATH" ]; then
+          echo "ERROR: APK not found at $APK_PATH"
+          exit 1
+        fi
+
+        echo "Uploading APK to transfer.sh..."
+        # upload and capture the returned URL
+        UPLOAD_URL=$(curl --silent --upload-file "$APK_PATH" "https://transfer.sh/$(basename $APK_PATH)")
+
+        if [ -z "$UPLOAD_URL" ]; then
+          echo "Upload failed or no URL returned by transfer.sh"
+          exit 1
+        fi
+
+        echo "APK uploaded: $UPLOAD_URL"
+        # expose the URL as a step output and a log line
+        echo "apk_url=$UPLOAD_URL" >> "$GITHUB_OUTPUT"
+        echo "Download URL: $UPLOAD_URL"
+
+    - name: Check REPO_PAT secret presence
+      if: always()
+      run: |
+        if [ -z "${REPO_PAT}" ]; then
+          echo "WARNING: secrets.REPO_PAT is not set. Release creation/upload may fail."
+          echo "To fix, add a Personal Access Token (repo scope) as the secret REPO_PAT."
+        else
+          echo "REPO_PAT secret present (masked)."
+        fi
+      env:
+        REPO_PAT: ${{ secrets.REPO_PAT }}
