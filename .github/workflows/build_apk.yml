@@ -236,6 +236,23 @@ jobs:
       working-directory: ./flutter_mobile
       run: flutter build apk --debug --no-shrink
 
+    - name: Verify APK exists and print metadata
+      run: |
+        APK=flutter_mobile/build/app/outputs/flutter-apk/app-debug.apk
+        echo "Checking for $APK"
+        if [ -f "$APK" ]; then
+          echo "APK found:"
+          ls -la "$APK" || true
+          echo "Size:" $(stat -c%s "$APK" 2>/dev/null || stat -f%z "$APK")
+          echo "MD5 (if available):" $(md5sum "$APK" 2>/dev/null || md5 -q "$APK" 2>/dev/null || echo "md5 unavailable")
+        else
+          echo "ERROR: APK not found at $APK"
+          echo "Listing build output directory for debugging:"
+          ls -la flutter_mobile/build/app/outputs || true
+          ls -la flutter_mobile/build/app || true
+          exit 1
+        fi
+
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
