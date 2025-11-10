@@ -264,19 +264,41 @@ jobs:
     - name: Upload APK to transfer.sh (public temporary link)
       if: success()
       run: |
+        set -euo pipefail
         APK_PATH="flutter_mobile/build/app/outputs/flutter-apk/app-debug.apk"
         if [ ! -f "$APK_PATH" ]; then
           echo "ERROR: APK not found at $APK_PATH"
           exit 1
         fi
 
-        echo "Uploading APK to transfer.sh..."
-        # upload and capture the returned URL
-        UPLOAD_URL=$(curl --silent --upload-file "$APK_PATH" "https://transfer.sh/$(basename $APK_PATH)")
+        echo "Uploading APK to transfer.sh (with retries and timeout)..."
+        # Try upload up to 3 times, capture verbose output for debugging.
+        ATTEMPT=0
+        MAX=3
+        UPLOAD_URL=""
+        while [ $ATTEMPT -lt $MAX ]; do
+          ATTEMPT=$((ATTEMPT+1))
+          echo "Attempt $ATTEMPT of $MAX"
+          # Use a timeout and retry policy; capture both stdout and stderr
+          RESPONSE=$(curl --show-error --fail --retry 2 --retry-delay 5 --max-time 60 --upload-file "$APK_PATH" "https://transfer.sh/$(basename $APK_PATH)" 2>&1) || true
+          EXIT_CODE=$?
+          echo "curl exit: $EXIT_CODE"
+          echo "$RESPONSE"
+          # Try to parse a URL from the response
+          URL=$(echo "$RESPONSE" | grep -Eo 'https?://[^ ]+' | tail -n1 || true)
+          if [ -n "$URL" ]; then
+            UPLOAD_URL="$URL"
+            break
+          fi
+          echo "Upload attempt $ATTEMPT failed, retrying..."
+          sleep 2
+        done
 
         if [ -z "$UPLOAD_URL" ]; then
-          echo "Upload failed or no URL returned by transfer.sh"
-          exit 1
+          echo "Warning: upload to transfer.sh failed after $MAX attempts. This is non-fatal — artifact is available in Actions artifacts."
+          echo "Full curl output above for debugging."
+          # Do not fail the workflow just because transfer.sh is unavailable
+          exit 0
         fi
 
         echo "APK uploaded: $UPLOAD_URL"
