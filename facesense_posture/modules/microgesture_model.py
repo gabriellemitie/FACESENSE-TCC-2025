@@ -4,53 +4,15 @@ Baseado no realtime_mediapipe.py - detecta estresse através de microexpressões
 """
 
 import cv2
+import mediapipe as mp
+import numpy as np
+import pandas as pd
 import time
 import json
 from pathlib import Path
 from collections import deque
 import joblib
-
-# Heavy / native libs (import lazily to avoid long import times at module import)
-# We'll populate these names via _lazy_imports() when needed.
-mp = None
-np = None
-pd = None
-sa = None
-
-
-def _lazy_imports():
-    """Importa módulos pesados sob demanda e guarda nos nomes globais.
-    Chamado antes de usar mediapipe/numpy/pandas/simpleaudio.
-    """
-    global mp, np, pd, sa
-    # mediapipe
-    if mp is None:
-        try:
-            import mediapipe as _mp
-            mp = _mp
-        except Exception:
-            mp = None
-    # numpy
-    if np is None:
-        try:
-            import numpy as _np
-            np = _np
-        except Exception:
-            np = None
-    # pandas
-    if pd is None:
-        try:
-            import pandas as _pd
-            pd = _pd
-        except Exception:
-            pd = None
-    # simpleaudio (opcional)
-    if sa is None:
-        try:
-            import simpleaudio as _sa
-            sa = _sa
-        except Exception:
-            sa = None
+import simpleaudio as sa
 
 
 class MicrogestureMonitor:
@@ -85,14 +47,27 @@ class MicrogestureMonitor:
         # Defina como False para não mostrar resultados na imagem de vídeo
         self.show_on_screen = True
         
-        # MediaPipe placeholders — inicializados de forma preguiçosa
-        # (mediapipe e criação de objetos FaceMesh/Pose são caros; não os
-        # criamos durante o import do módulo/instanciação da classe)
-        self.mp_face_mesh = None
-        self.mp_drawing = None
-        self.face_mesh = None
-        self.mp_pose = None
-        self.pose = None
+        # MediaPipe Face Mesh
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.mp_drawing = mp.solutions.drawing_utils
+        
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.6
+        )
+        
+        # MediaPipe Pose para análise de postura
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
         
         # Modelos e configurações
         self.microgesture_model = None
@@ -102,15 +77,7 @@ class MicrogestureMonitor:
       
         self.threshold_shift = float(threshold_shift)  # Mais difícil classificar como estresse
         
-        # guarda caminhos, mas NÃO carrega modelos imediatamente para manter
-        # a inicialização da instância rápida. Chame `carregar_modelos()`
-        # explicitamente quando quiser carregar os pesos/pipelines.
-        self._model_path = model_path
-        self._features_json_path = features_json_path
-        self._posture_model_path = posture_model_path
-
-    # Nota: não inicializamos MediaPipe aqui — só quando processarmos o
-    # primeiro frame ou quando o monitor for efetivamente iniciado.
+        self._carregar_modelos(model_path, features_json_path, posture_model_path)
 
         # Aliases (possibilita sobrescrever via construtor)
         if aliases is not None and isinstance(aliases, (list, tuple)) and len(aliases) > 0:
@@ -189,18 +156,10 @@ class MicrogestureMonitor:
             model_loaded = False
             for path in possible_paths:
                 if Path(path).exists():
-                    print(f"[carregar_modelos] carregando microgesture model from: {path}")
-                    t0 = time.perf_counter()
-                    try:
-                        self.microgesture_model = joblib.load(path)
-                        t1 = time.perf_counter()
-                        print(f"✅ Modelo de microgesture carregado: {path} (tempo {t1 - t0:.2f}s)")
-                        model_loaded = True
-                        break
-                    except Exception as e:
-                        t1 = time.perf_counter()
-                        print(f"❌ Falha ao carregar microgesture model from {path} after {t1 - t0:.2f}s: {e}")
-                        continue
+                    self.microgesture_model = joblib.load(path)
+                    print(f"✅ Modelo de microgesture carregado: {path}")
+                    model_loaded = True
+                    break
             
             if not model_loaded:
                 raise FileNotFoundError(f"Modelo não encontrado em nenhum dos caminhos: {possible_paths}")
@@ -235,15 +194,9 @@ class MicrogestureMonitor:
             
             if not features_loaded:
                 print(f"⚠️ Arquivo de features não encontrado: {features_possible_paths}")
-
-            # Carrega modelo de postura Keras (pode ser pesado).
-            # Permite pular via variável de ambiente FACESENSE_SKIP_POSTURE_MODEL=1
-            import os as _os
-            if _os.environ.get('FACESENSE_SKIP_POSTURE_MODEL'):
-                print("[carregar_modelos] Pulando carregamento do modelo de postura (FACESENSE_SKIP_POSTURE_MODEL=1)")
-                self.posture_model = None
-            else:
-                self._carregar_modelo_postura(posture_model_path)
+            
+            # Carrega modelo de postura Keras
+            self._carregar_modelo_postura(posture_model_path)
                 
         except Exception as e:
             print(f"❌ Erro ao carregar modelos: {e}")
@@ -290,63 +243,13 @@ class MicrogestureMonitor:
             print(f"❌ Erro ao carregar modelo de postura: {e}")
             self.posture_model = None
 
-    def _init_mediapipe(self):
-        """Inicializa objetos MediaPipe sob demanda. Pode ser chamado várias vezes.
-        Levanta RuntimeError se mediapipe não estiver disponível.
-        """
-        # importa lazy libs
-        _lazy_imports()
-        if mp is None:
-            raise RuntimeError("mediapipe não disponível no ambiente")
-
-        if self.mp_face_mesh is None:
-            try:
-                self.mp_face_mesh = mp.solutions.face_mesh
-                self.mp_drawing = mp.solutions.drawing_utils
-                self.face_mesh = self.mp_face_mesh.FaceMesh(
-                    static_image_mode=False,
-                    max_num_faces=1,
-                    refine_landmarks=True,
-                    min_detection_confidence=0.6,
-                    min_tracking_confidence=0.6
-                )
-            except Exception as e:
-                print(f"Erro ao inicializar FaceMesh: {e}")
-                self.face_mesh = None
-
-        if self.mp_pose is None:
-            try:
-                self.mp_pose = mp.solutions.pose
-                self.pose = self.mp_pose.Pose(
-                    static_image_mode=False,
-                    model_complexity=1,
-                    enable_segmentation=False,
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5
-                )
-            except Exception as e:
-                print(f"Erro ao inicializar Pose: {e}")
-                self.pose = None
-
-    def carregar_modelos(self):
-        """Wrapper público para carregar os modelos (pode ser executado em background)."""
-        self._carregar_modelos(self._model_path, self._features_json_path, self._posture_model_path)
-
     def _play_tone(self, freq=1000, dur=300, volume=1.0):
         """Reproduz tom de alerta"""
         try:
-            # garante que numpy/simpleaudio estão disponíveis
-            _lazy_imports()
             fs = 44100  # taxa de amostragem
-            if np is None:
-                print("numpy não disponível para geração de tom")
-                return
             t = np.linspace(0, dur / 1000, int(fs * dur / 1000), False)
             tone = np.sin(freq * t * 2 * np.pi)
             audio = (tone * (32767 * volume)).astype(np.int16)
-            if sa is None:
-                print("simpleaudio não disponível; não será reproduzido som")
-                return
             play_obj = sa.play_buffer(audio, 1, 2, fs)
             play_obj.wait_done()
         except Exception as e:
@@ -358,13 +261,7 @@ class MicrogestureMonitor:
             raise RuntimeError("Modelo de microgesture não foi carregado!")
         if self.posture_model is None:
             print("⚠️ Modelo de postura não disponível - usando apenas microgesture")
-        # Inicializa MediaPipe sob demanda — não bloqueia o import do módulo
-        try:
-            self._init_mediapipe()
-        except Exception as e:
-            # não abortamos a inicialização se MediaPipe falhar; apenas informamos
-            print(f"Aviso: falha ao inicializar MediaPipe no iniciar(): {e}")
-
+            
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             raise RuntimeError("Não foi possível acessar a câmera!")
@@ -402,21 +299,10 @@ class MicrogestureMonitor:
         h, w, _ = frame.shape
         
         # Processa face e pose
-        _lazy_imports()
-        # garante inicialização do MediaPipe antes de usar face_mesh/pose
-        if self.face_mesh is None or self.pose is None:
-            try:
-                self._init_mediapipe()
-            except Exception as e:
-                # não conseguimos inicializar mediapipe: prosseguimos sem face/pose
-                print(f"Aviso: MediaPipe não inicializado: {e}")
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         # FaceMesh pode por vezes lançar erros internos (ex: '_graph is None in SolutionBase')
         # em alguns ambientes. Tratamos e tentamos reinicializar o FaceMesh automaticamente.
         try:
-            if self.face_mesh is None:
-                raise RuntimeError("face_mesh não inicializado")
             face_results = self.face_mesh.process(rgb)
         except Exception as e:
             msg = str(e)
