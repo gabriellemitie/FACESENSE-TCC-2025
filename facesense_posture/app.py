@@ -3,6 +3,7 @@ import time
 import platform
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 import pandas as pd
 import cv2
@@ -15,6 +16,13 @@ import pandas as pd
 import cv2
 import numpy as np
 >>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
+=======
+import pandas as pd
+import cv2
+import numpy as np
+import importlib
+import os
+>>>>>>> parent of 8cd4d82 (teste)
 
 
 from PySide6.QtWidgets import (
@@ -24,7 +32,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QImage, QPixmap, QFont
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 from PySide6.QtCore import QTimer, Qt, QThread, Signal
+=======
+from PySide6.QtCore import QTimer, Qt
+>>>>>>> parent of 8cd4d82 (teste)
 =======
 from PySide6.QtCore import QTimer, Qt
 >>>>>>> parent of 8cd4d82 (teste)
@@ -298,6 +310,7 @@ class PosturaApp(QMainWindow):
         try:
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             # Se monitores não estão carregados, inicia carregamento assíncrono
             if getattr(self, 'monitor_postura', None) is None:
                 # se já estiver carregando, avisa o usuário
@@ -310,11 +323,16 @@ class PosturaApp(QMainWindow):
                 self.start_async_load_monitors()
                 QMessageBox.information(self, "Carregando", "Os modelos estão sendo carregados em segundo plano. Quando prontos, clique novamente em Iniciar.")
 =======
+=======
+>>>>>>> parent of 8cd4d82 (teste)
             # Lazy-load dos monitores (se ainda não carregados)
             self.load_monitors()
 
             if self.monitor_postura is None:
                 QMessageBox.warning(self, "Erro", "Monitor não disponível: falha ao carregar dependências de ML.")
+<<<<<<< HEAD
+>>>>>>> parent of 8cd4d82 (teste)
+=======
 >>>>>>> parent of 8cd4d82 (teste)
                 return
 =======
@@ -407,6 +425,7 @@ class PosturaApp(QMainWindow):
         self.active_monitor = self.monitor_postura or self.posture_monitor
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     # ===== Background loader thread =====
     class _MonitorLoader(QThread):
         finished_signal = Signal(bool, str)
@@ -440,6 +459,8 @@ class PosturaApp(QMainWindow):
 
 =======
 >>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
+=======
+>>>>>>> parent of 8cd4d82 (teste)
 =======
 >>>>>>> parent of 8cd4d82 (teste)
     def _on_test_sound(self):
@@ -610,6 +631,7 @@ class PosturaApp(QMainWindow):
         """Gera até 8 gráficos, um por sessão (linha temporal de postura)"""
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         # importa pandas/numpy localmente para evitar custo no startup
         try:
             import pandas as pd
@@ -617,6 +639,8 @@ class PosturaApp(QMainWindow):
         except Exception:
             pd = None
             np = None
+=======
+>>>>>>> parent of 8cd4d82 (teste)
 =======
 >>>>>>> parent of 8cd4d82 (teste)
         # Lazy-load matplotlib and create canvas only when needed to avoid
