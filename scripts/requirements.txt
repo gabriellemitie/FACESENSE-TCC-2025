@@ -1,7 +1,0 @@
-pandas
-numpy
-matplotlib
-seaborn
-python-dateutil
-# Optional (for HTML templating if desired)
-Jinja2

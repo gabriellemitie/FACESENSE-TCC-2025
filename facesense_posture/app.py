@@ -1,8 +1,14 @@
 import sys
 import time
 import platform
+<<<<<<< HEAD
 import importlib
 import os
+=======
+import pandas as pd
+import cv2
+import numpy as np
+>>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
 
 # Lazy import placeholder for heavy OpenCV module. Use _lazy_cv2() before use.
 cv2 = None
@@ -25,10 +31,21 @@ from PySide6.QtWidgets import (
     QMessageBox, QTabWidget, QSlider, QFormLayout, QCheckBox
 )
 from PySide6.QtGui import QImage, QPixmap, QFont
+<<<<<<< HEAD
 from PySide6.QtCore import QTimer, Qt, QThread, Signal
 # NOTE: matplotlib and model modules (PostureMonitor / MicrogestureMonitor)
 # are heavy to import and can slow startup significantly. They are imported
 # lazily inside methods (see `load_monitors` and `gerar_graficos_multiplos`).
+=======
+from PySide6.QtCore import QTimer, Qt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
+from modules.posture_model import PostureMonitor
+# ===== IMPORTA O MÓDULO DE MICROGESTURE =====
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from modules.microgesture_model import MicrogestureMonitor
+>>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
 
 
 class PosturaApp(QMainWindow):
@@ -161,10 +178,16 @@ class PosturaApp(QMainWindow):
             pass
 
         # ========= MÓDULO INTEGRADO (MICROGESTURE + POSTURA) ==========
-        # Não instanciamos o monitor aqui para evitar bloqueio na inicialização.
-        # A criação será feita de forma preguiçosa (lazy) em `load_monitors()`
-        # ou quando o usuário clicar em Iniciar.
-        self.monitor_postura = None
+        self.monitor_postura = MicrogestureMonitor(
+            model_path="models/model_face_temporal.pkl",
+            features_json_path="models/features.json",
+            # Usar o classificador de microgestos 'best_model.keras' (24 classes)
+            posture_model_path="models/best_model.keras",
+            beep_callback=self.beep,
+            update_callback=self.atualizar_status_ui
+        )
+        # Não desenhar resultados sobre o frame (somente gravação em histórico)
+        self.monitor_postura.show_on_screen = False
 
         # ========= MONITOR DE POSTURA LEGACY (opcional) =========
         # Instanciação do monitor legacy é feita mais abaixo, após criação dos
@@ -181,17 +204,13 @@ class PosturaApp(QMainWindow):
         self.hist_label = QLabel("📊 Relatórios de monitoramento")
         self.hist_label.setFont(QFont("Arial", 14))
 
-        # Adiamos a criação de matplotlib/FigureCanvas até ser necessário.
-        self.hist_placeholder = QLabel("Gráfico será carregado quando necessário")
-        self.hist_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.canvas = None
-        self.fig = None
-        self.ax = None
+        self.fig, self.ax = plt.subplots(figsize=(6, 4))
+        self.canvas = FigureCanvas(self.fig)
 
-        self.hist_layout = QVBoxLayout()
-        self.hist_layout.addWidget(self.hist_label)
-        self.hist_layout.addWidget(self.hist_placeholder)
-        self.tab_historico.setLayout(self.hist_layout)
+        vbox_hist = QVBoxLayout()
+        vbox_hist.addWidget(self.hist_label)
+        vbox_hist.addWidget(self.canvas)
+        self.tab_historico.setLayout(vbox_hist)
 
         # ========= ABA CONFIGURAÇÕES =========
         form = QFormLayout()
@@ -256,10 +275,23 @@ class PosturaApp(QMainWindow):
 
         self.tab_config.setLayout(form)
 
-        # ===== Instanciação de monitores será feita de forma preguiçosa =====
-        # Os monitores (MicrogestureMonitor e PostureMonitor) são importados
-        # e instanciados apenas quando o usuário iniciar o monitor, via
-        # `load_monitors()`. Isso evita bloqueio na inicialização da UI.
+        # ===== Instancia o PostureMonitor legacy AGORA que os widgets existem =====
+        try:
+            if PostureMonitor is not None:
+                # Usa os valores iniciais dos sliders para configurar o monitor
+                self.posture_monitor = PostureMonitor(
+                    alerta_segundos=self.slider_alerta.value(),
+                    lembrete_alongar_min=self.slider_alongamento.value(),
+                    beep_callback=self.beep,
+                    update_callback=self.atualizar_status_ui
+                )
+                try:
+                    print(f"[App] PostureMonitor legacy instantiated: {self.posture_monitor is not None}, debounce={getattr(self.posture_monitor, 'DEBOUNCE_FRAMES', 'n/a')}")
+                except Exception:
+                    pass
+        except Exception as e:
+            print("Falha ao instanciar PostureMonitor legacy:", e)
+            self.posture_monitor = None
 
         # ========= CONEXÕES =========
         self.btn_iniciar.clicked.connect(self.iniciar_monitoramento)
@@ -274,6 +306,7 @@ class PosturaApp(QMainWindow):
     # ========== FUNÇÕES ==========
     def iniciar_monitoramento(self):
         try:
+<<<<<<< HEAD
             # Se monitores não estão carregados, inicia carregamento assíncrono
             if getattr(self, 'monitor_postura', None) is None:
                 # se já estiver carregando, avisa o usuário
@@ -286,6 +319,8 @@ class PosturaApp(QMainWindow):
                 self.start_async_load_monitors()
                 QMessageBox.information(self, "Carregando", "Os modelos estão sendo carregados em segundo plano. Quando prontos, clique novamente em Iniciar.")
                 return
+=======
+>>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
             # Inicia ambos os monitores automaticamente (integrado + legacy se disponível)
             # Configura parâmetros comuns e inicia o monitor integrado (MicrogestureMonitor)
             self.monitor_postura.ALERTA_SEGUNDOS_POSTURA = self.slider_alerta.value()
@@ -316,6 +351,7 @@ class PosturaApp(QMainWindow):
         self.historico = []
         self.timer.start(30)
 
+<<<<<<< HEAD
     def load_monitors(self):
         """Importa e instancia os monitores de forma preguiçosa (lazy).
         Chamar antes de iniciar o monitor para reduzir tempo de startup da UI.
@@ -432,6 +468,8 @@ class PosturaApp(QMainWindow):
             self.status_label.setText("❌ Falha ao carregar monitores")
             QMessageBox.warning(self, "Erro ao carregar modelos", f"Falha: {msg}")
 
+=======
+>>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
     def _on_test_sound(self):
         """Handler do botão 'Testar som' — reproduz o som de alerta (respeita checkbox de som)."""
         try:
@@ -600,6 +638,7 @@ class PosturaApp(QMainWindow):
 
     def gerar_graficos_multiplos(self):
         """Gera até 8 gráficos, um por sessão (linha temporal de postura)"""
+<<<<<<< HEAD
         # importa pandas/numpy localmente para evitar custo no startup
         try:
             import pandas as pd
@@ -636,14 +675,13 @@ class PosturaApp(QMainWindow):
                 print("Erro ao carregar matplotlib/gerar canvas:", e)
                 return
 
+=======
+>>>>>>> parent of d8f4b73 (fix: imports e add: ajuste relatorio)
         if not self.historico_sessoes:
-            try:
-                self.ax.clear()
-                self.ax.text(0.5, 0.5, "Nenhum histórico encontrado",
-                             ha='center', va='center', fontsize=12, color='gray')
-                self.canvas.draw()
-            except Exception:
-                pass
+            self.ax.clear()
+            self.ax.text(0.5, 0.5, "Nenhum histórico encontrado",
+                         ha='center', va='center', fontsize=12, color='gray')
+            self.canvas.draw()
             return
 
         self.ax.clear()
