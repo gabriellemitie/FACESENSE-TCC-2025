@@ -1,11 +1,23 @@
 import sys
 import time
 import platform
-import pandas as pd
-import cv2
-import numpy as np
 import importlib
 import os
+
+# Lazy import placeholder for heavy OpenCV module. Use _lazy_cv2() before use.
+cv2 = None
+
+
+def _lazy_cv2():
+    """Importa cv2 sob demanda e coloca no nome global `cv2`."""
+    global cv2
+    if cv2 is None:
+        try:
+            import cv2 as _cv2
+            cv2 = _cv2
+        except Exception as e:
+            print(f"Aviso: falha ao importar cv2: {e}")
+            cv2 = None
 
 
 from PySide6.QtWidgets import (
@@ -13,7 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QTabWidget, QSlider, QFormLayout, QCheckBox
 )
 from PySide6.QtGui import QImage, QPixmap, QFont
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QThread, Signal
 # NOTE: matplotlib and model modules (PostureMonitor / MicrogestureMonitor)
 # are heavy to import and can slow startup significantly. They are imported
 # lazily inside methods (see `load_monitors` and `gerar_graficos_multiplos`).
@@ -254,14 +266,25 @@ class PosturaApp(QMainWindow):
         self.btn_pausar.clicked.connect(self.pausar_monitoramento)
         self.btn_encerrar.clicked.connect(self.encerrar_monitoramento)
 
+        # Observação: o carregamento de modelos pode ser iniciado pelo
+        # chamador (ex.: bloqueante no startup) ou via start_async_load_monitors().
+        # Não iniciamos automaticamente aqui para permitir opções de inicialização
+        # controladas (ver __main__).
+
     # ========== FUNÇÕES ==========
     def iniciar_monitoramento(self):
         try:
-            # Lazy-load dos monitores (se ainda não carregados)
-            self.load_monitors()
-
-            if self.monitor_postura is None:
-                QMessageBox.warning(self, "Erro", "Monitor não disponível: falha ao carregar dependências de ML.")
+            # Se monitores não estão carregados, inicia carregamento assíncrono
+            if getattr(self, 'monitor_postura', None) is None:
+                # se já estiver carregando, avisa o usuário
+                if getattr(self, 'loader_thread', None) is not None and self.loader_thread.isRunning():
+                    QMessageBox.information(self, "Aguardando", "Os modelos estão sendo carregados. Aguarde alguns segundos e tente novamente.")
+                    return
+                # inicia carregamento em background e desabilita o botão
+                self.btn_iniciar.setEnabled(False)
+                self.status_label.setText("⏳ Carregando modelos...")
+                self.start_async_load_monitors()
+                QMessageBox.information(self, "Carregando", "Os modelos estão sendo carregados em segundo plano. Quando prontos, clique novamente em Iniciar.")
                 return
             # Inicia ambos os monitores automaticamente (integrado + legacy se disponível)
             # Configura parâmetros comuns e inicia o monitor integrado (MicrogestureMonitor)
@@ -306,19 +329,31 @@ class PosturaApp(QMainWindow):
         MicrogestureMonitor = None
         PostureMonitor = None
         try:
+            t0 = time.perf_counter()
+            print('[load_monitors] import modules.microgesture_model...')
             mod = importlib.import_module('modules.microgesture_model')
+            t1 = time.perf_counter()
             MicrogestureMonitor = getattr(mod, 'MicrogestureMonitor', None)
+            print(f"[load_monitors] imported microgesture_model in {t1 - t0:.2f}s")
         except Exception as e:
-            print('Erro ao importar MicrogestureMonitor:', e)
+            t1 = time.perf_counter()
+            print(f'[load_monitors] failed to import microgesture_model after {t1 - t0:.2f}s:', e)
 
         try:
+            t0 = time.perf_counter()
+            print('[load_monitors] import modules.posture_model...')
             mod2 = importlib.import_module('modules.posture_model')
+            t1 = time.perf_counter()
             PostureMonitor = getattr(mod2, 'PostureMonitor', None)
+            print(f"[load_monitors] imported posture_model in {t1 - t0:.2f}s")
         except Exception as e:
-            print('Erro ao importar PostureMonitor:', e)
+            t1 = time.perf_counter()
+            print(f'[load_monitors] failed to import posture_model after {t1 - t0:.2f}s:', e)
 
         if MicrogestureMonitor is not None:
             try:
+                t0 = time.perf_counter()
+                print('[load_monitors] instantiate MicrogestureMonitor...')
                 self.monitor_postura = MicrogestureMonitor(
                     model_path="models/model_face_temporal.pkl",
                     features_json_path="models/features.json",
@@ -326,28 +361,76 @@ class PosturaApp(QMainWindow):
                     beep_callback=self.beep,
                     update_callback=self.atualizar_status_ui
                 )
+                # Não carregamos modelos no __init__ (são pesados). Carregamos
+                # explicitamente aqui (este método já roda em background).
+                try:
+                    t_mid = time.perf_counter()
+                    # chamada de carga pesada (joblib / Keras) — roda em background
+                    self.monitor_postura.carregar_modelos()
+                    t1 = time.perf_counter()
+                    print(f"[load_monitors] loaded models in {t1 - t_mid:.2f}s")
+                except Exception as e:
+                    t1 = time.perf_counter()
+                    print(f"[load_monitors] failed loading models after {t1 - t_mid:.2f}s: {e}")
                 self.monitor_postura.show_on_screen = False
+                print(f"[load_monitors] instantiated MicrogestureMonitor in {t1 - t0:.2f}s")
             except Exception as e:
-                print('Falha ao instanciar MicrogestureMonitor:', e)
+                t1 = time.perf_counter()
+                print(f'[load_monitors] failed to instantiate MicrogestureMonitor after {t1 - t0:.2f}s:', e)
                 self.monitor_postura = None
 
         if PostureMonitor is not None:
             try:
+                t0 = time.perf_counter()
+                print('[load_monitors] instantiate PostureMonitor...')
                 self.posture_monitor = PostureMonitor(
                     alerta_segundos=self.slider_alerta.value(),
                     lembrete_alongar_min=self.slider_alongamento.value(),
                     beep_callback=self.beep,
                     update_callback=self.atualizar_status_ui
                 )
+                t1 = time.perf_counter()
                 try:
-                    print(f"[App] PostureMonitor legacy instantiated: {self.posture_monitor is not None}")
+                    print(f"[load_monitors] instantiated PostureMonitor in {t1 - t0:.2f}s")
                 except Exception:
                     pass
             except Exception as e:
-                print('Falha ao instanciar PostureMonitor:', e)
+                t1 = time.perf_counter()
+                print(f'[load_monitors] failed to instantiate PostureMonitor after {t1 - t0:.2f}s:', e)
                 self.posture_monitor = None
 
         self.active_monitor = self.monitor_postura or self.posture_monitor
+
+    # ===== Background loader thread =====
+    class _MonitorLoader(QThread):
+        finished_signal = Signal(bool, str)
+
+        def __init__(self, app):
+            super().__init__()
+            self.app = app
+
+        def run(self):
+            try:
+                self.app.load_monitors()
+                self.finished_signal.emit(True, "ok")
+            except Exception as e:
+                self.finished_signal.emit(False, str(e))
+
+    def start_async_load_monitors(self):
+        """Inicia carregamento dos monitores em background (não bloqueante)."""
+        if getattr(self, 'loader_thread', None) is not None and self.loader_thread.isRunning():
+            return
+        self.loader_thread = PosturaApp._MonitorLoader(self)
+        self.loader_thread.finished_signal.connect(self.on_monitors_loaded)
+        self.loader_thread.start()
+
+    def on_monitors_loaded(self, ok, msg):
+        if ok:
+            self.status_label.setText("✅ Monitores carregados")
+            self.btn_iniciar.setEnabled(True)
+        else:
+            self.status_label.setText("❌ Falha ao carregar monitores")
+            QMessageBox.warning(self, "Erro ao carregar modelos", f"Falha: {msg}")
 
     def _on_test_sound(self):
         """Handler do botão 'Testar som' — reproduz o som de alerta (respeita checkbox de som)."""
@@ -452,11 +535,13 @@ class PosturaApp(QMainWindow):
 
         # --- CSV (resumo) ---
         try:
+            # importa pandas localmente para evitar custo no startup
+            import pandas as pd
             df_csv = pd.DataFrame([{
                 "inicio": s["inicio"],
                 "fim": s["fim"],
                 # Estimativa de duração pelos frames coletados nesta sessão
-                "duracao_min": round((len(s["dados"]) / 30) / 60, 2),  # supondo ~30fps de amostragem lógica
+                "duracao_min": round((len(s["dados"]) / 30) / 60, 2),
                 "frames": len(s["dados"])
             } for s in self.historico_sessoes])
             df_csv.to_csv(self.historico_csv_path, index=False)
@@ -515,12 +600,24 @@ class PosturaApp(QMainWindow):
 
     def gerar_graficos_multiplos(self):
         """Gera até 8 gráficos, um por sessão (linha temporal de postura)"""
+        # importa pandas/numpy localmente para evitar custo no startup
+        try:
+            import pandas as pd
+            import numpy as np
+        except Exception:
+            pd = None
+            np = None
         # Lazy-load matplotlib and create canvas only when needed to avoid
         # heavy imports at application startup.
         if self.canvas is None:
             try:
+                import time as _t
+                t0 = _t.perf_counter()
+                print('[gerar_graficos_multiplos] importing matplotlib...')
                 import matplotlib.pyplot as plt
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+                t1 = _t.perf_counter()
+                print(f"[gerar_graficos_multiplos] imported matplotlib in {t1 - t0:.2f}s")
                 self.fig, self.ax = plt.subplots(figsize=(6, 4))
                 self.canvas = FigureCanvas(self.fig)
                 # replace placeholder widget in the layout
@@ -811,7 +908,19 @@ class PosturaApp(QMainWindow):
 
 # ========== MAIN ==========
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    janela = PosturaApp()
-    janela.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        janela = PosturaApp()
+        janela.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print("Unhandled exception during app startup:\n", tb)
+        # also write to a log file for easier inspection
+        try:
+            with open('facesense_posture/app_error.log', 'w', encoding='utf-8') as f:
+                f.write(tb)
+        except Exception:
+            pass
+        raise
